@@ -8,6 +8,7 @@ from google.genai import types
 from studioz.config import settings
 from studioz.prompts import get_persona
 from studioz.schemas import (
+    MemberReview,
     ScriptTreatment,
     ExecutiveReview, 
     Storyboard, 
@@ -89,6 +90,73 @@ async def agent_studio_head(script_treatment: ScriptTreatment, persona_key: str 
         logger.exception(f"Failed to generate structured executive review")
         raise
 
+async def agent_committee_member(
+        script_treatment: ScriptTreatment, 
+        persona_key: str,
+        persona_group: str = "committee_member",
+    ) -> MemberReview:
+    """Generic committee member agent parameterized by persona group and key"""
+    persona = get_persona(persona_group, persona_key)
+    logger.info(
+        "Committee Member '{}' ({}) reviewing script treatment...",
+        persona["name"],
+        persona["title"],
+    )
+
+    response = await client.aio.models.generate_content(
+        model=settings.model_pro,
+        contents=f"Script Treatment to Evaluate:\n{script_treatment.model_dump_json()}",
+        config=types.GenerateContentConfig(
+            system_instruction=persona["system_instruction"],
+            response_mime_type="application/json",
+            response_schema=MemberReview,
+            temperature=persona.get("temperature", 0.2),
+        ),
+    )
+
+    review: MemberReview = response.parsed
+    logger.success(
+        "Committee Member '{}' completed review with stance: '{}'",
+        persona["name"],
+        review.stance.upper(),
+    )
+
+    return review
+
+async def agent_consensus(
+        script_treatment: ScriptTreatment, 
+        reviews: list[MemberReview],
+    ) -> ExecutiveReview:
+    """Synthesizes individual MemberReview feedback into a final ExecutiveReview"""
+    persona = get_persona("consensus", "chair")
+    logger.info("Chairperson '{}' synthesizing committee reviews...", persona["name"])
+
+    serialized_reviews = "\n\n".join(
+        f"--- REVIEWER: {r.reviewer_name} ({r.role}) ---\n{r.model_dump_json()}"
+        for r in reviews
+    )
+
+    prompt = f"""
+    Script Treatment:
+    {script_treatment.model_dump_json()}
+
+    Committee Member Reviews:
+    {serialized_reviews}
+    """
+
+    response = await client.aio.models.generate_content(
+        model=settings.model_pro,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=persona["system_instruction"],
+            response_mime_type="application/json",
+            response_schema=ExecutiveReview,
+            temperature=persona.get("temperature", 0.3),
+        ),
+    )
+    logger.success("Consensus synthesis complete. Greenlight: {}", response.parsed.greenlight)
+    return response.parsed
+
 async def agent_director(
         script_treatment: ScriptTreatment, 
         review: ExecutiveReview,
@@ -140,21 +208,43 @@ async def agent_director(
 async def run_studioz_pipeline(
         user_pitch: str,
         screen_writer_persona: str,
-        studio_head_persona: str,
+        # studio_head_persona: str,
         director_persona: str
     ) -> None:
     """Runs the full StudioZ pipeline from pitch to storyboard"""
     logger.info("Starting StudioZ pipeline for pitch: {}...", user_pitch[:50])
 
     try:
-        # Run the asynchronous agents in sequence
         print("Running Screenwriter Agent...")
         treatment = await agent_screenwriter(user_pitch, screen_writer_persona)
 
 
-        print("Running Studio Head...")
-        # Executed simultaneously using asyncio.gather
-        exec_review = await agent_studio_head(treatment, studio_head_persona)
+        # print("Running Studio Head...")
+        # # Executed simultaneously using asyncio.gather
+        # exec_review = await agent_studio_head(treatment, studio_head_persona)
+
+        print("\nRunning Committee Review CONCURRENTLY...")
+        cfo_review, creative_review, legal_review = await asyncio.gather(
+            agent_committee_member(treatment, "cfo", persona_group="committee_member"),
+            agent_committee_member(treatment, "creative_exec", persona_group="committee_member"),
+            agent_committee_member(treatment, "legal_counsel", persona_group="committee_member"),
+        )
+
+        # Console display for individual committee member stances
+        for rev in [cfo_review, creative_review, legal_review]:
+            print(f"\n[Committee Member] {rev.reviewer_name} ({rev.role})")
+            print(f"Stance: {rev.stance.upper()} | Severity: {rev.severity.upper()}")
+            print("Key Points:")
+            for pt in rev.key_points:
+                print(f" - {pt}")
+
+        print("\nRunning Consensus Agent...")
+        exec_review = await agent_consensus(
+            treatment, [cfo_review, creative_review, legal_review]
+        )
+
+        print(f"\n[Executive Consensus] Greenlight: {exec_review.greenlight}")
+        print(f"Summary: {exec_review.summary}")
 
 
         print("Running Director Agent...")
@@ -165,8 +255,9 @@ async def run_studioz_pipeline(
         print("\n--- DIRECTOR STORYBOARD ---")
         print(storyboard)
 
-        # Output final results
         logger.info("Pipeline completed successfully.")
+
+        return treatment, exec_review, storyboard
 
     except Exception as e:
         logger.error(f"Pipeline failed: {e}")
@@ -194,13 +285,13 @@ if __name__ == "__main__":
         choices = ["blockbuster", "indie",],
         help="Persona key for the screenwriter agent"
     )
-    parse_args.add_argument(
-        "--studio-head-persona",
-        type=str,
-        default="skeptical_cfo",
-        choices = ["skeptical_cfo", "bold_innovator"],
-        help="Persona key for the studio head agent"
-    )
+    # parse_args.add_argument(
+    #     "--studio-head-persona",
+    #     type=str,
+    #     default="skeptical_cfo",
+    #     choices = ["skeptical_cfo", "bold_innovator"],
+    #     help="Persona key for the studio head agent"
+    # )
     parse_args.add_argument(
         "--director-persona",
         type=str,
@@ -214,7 +305,7 @@ if __name__ == "__main__":
     asyncio.run(run_studioz_pipeline(
         args.pitch, 
         args.screen_writer_persona, 
-        args.studio_head_persona, 
+        # args.studio_head_persona, 
         args.director_persona
         )
     )
