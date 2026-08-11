@@ -33,6 +33,9 @@ class StoryboardFrame(BaseModel):
     scene_description: str = Field(description="Narrative description of the action in this frame")
     camera_angle: str = Field(description="e.g. Close-up, Wide shot, Bird's eye")
     imagen_prompt: str = Field(description="Detailed prompt suitable for image generation")
+    image_path: str | None = Field(
+        default=None, description="Local filesystem path to the generated frame image, if generated"
+    )
 
 class Storyboard(BaseModel):
     title: str = Field(description="Film title this storyboard belongs to")
