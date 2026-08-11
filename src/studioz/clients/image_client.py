@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 
 from google.genai import types
@@ -5,7 +6,13 @@ from loguru import logger
 
 from studioz.clients.vertex_client import client
 
+# imagen-4.0-generate-001 via generate_images is deprecated (shutdown Aug 2026).
+# TODO: Migrate to Interactions API with gemini-3.1-flash-image once available
+# on Vertex AI. See https://ai.google.dev/gemini-api/docs/deprecations#imagen-models
 IMAGEN_MODEL = "imagen-4.0-generate-001"
+
+# Suppress the ExperimentalWarning from the SDK about generate_images deprecation
+warnings.filterwarnings("ignore", message=".*generate_images.*deprecated.*")
 
 
 async def generate_frame_image(imagen_prompt: str, output_path: str) -> str | None:
