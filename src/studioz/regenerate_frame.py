@@ -87,10 +87,10 @@ async def regenerate_frame(
     # Print confirmation
     print()
     if result:
-        print(f"✓ Frame {frame_number} regenerated successfully.")
+        print(f" Frame {frame_number} regenerated successfully.")
         print(f"  Image path: {result}")
     else:
-        print(f"✗ Frame {frame_number} image generation failed (image_path set to null).")
+        print(f" Frame {frame_number} image generation failed (image_path set to null).")
 
     if prompt_was_overridden:
         print(f"  Prompt was overridden (updated in storyboard JSON).")
