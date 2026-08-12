@@ -14,6 +14,9 @@ class PitchBrief(BaseModel):
         description="Target runtime in minutes, if constrained (e.g. short film festival limits). "
                     "If set, this overrides the screenwriter's own runtime estimate deterministically."
     )
+    num_frames: int = Field(
+        default=3, description="Number of storyboard frames to generate"
+    )
 
 
 class ScriptTreatment(BaseModel):
@@ -69,3 +72,13 @@ class MemberReview(BaseModel):
     severity: Literal["low", "medium", "high"] = Field(
         description="How strongly their identified domain concerns should weigh in the final decision"
     )
+
+
+class NarrationSegment(BaseModel):
+    frame_number: int = Field(description="Which storyboard frame this narration accompanies")
+    narration_text: str = Field(description="Spoken-language narration for this frame, a sentence or two")
+
+
+class NarrationScript(BaseModel):
+    title: str = Field(description="Film/storyboard title this narration belongs to")
+    segments: list[NarrationSegment] = Field(description="Narration segments, one per frame, in frame order")

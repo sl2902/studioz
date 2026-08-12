@@ -159,7 +159,8 @@ async def test_agent_director(mock_vertex_client, sample_script_treatment):
     assert call_kwargs["config"].response_schema == Storyboard
 
     persona = get_persona("director", "high_octane")
-    assert call_kwargs["config"].system_instruction == persona["system_instruction"]
+    assert persona["system_instruction"] in call_kwargs["config"].system_instruction
+    assert "EXACTLY 3 frames" in call_kwargs["config"].system_instruction
     assert call_kwargs["config"].temperature == persona["temperature"]
 
     mock_vertex_client.aio.models.generate_content.side_effect = Exception("Vertex error")

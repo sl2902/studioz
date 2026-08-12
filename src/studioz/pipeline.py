@@ -13,6 +13,7 @@ from studioz.agents import (
 )
 from studioz.clients.parallel_search import fetch_parallel_grounding
 from studioz.clients.image_client import generate_frame_image
+from studioz.narration_pipeline import run_narration_pipeline
 from studioz.schemas import PitchBrief, ScriptTreatment, Storyboard
 
 
@@ -37,12 +38,12 @@ def enforce_runtime_target(treatment: ScriptTreatment, brief: PitchBrief) -> Scr
 
 
 async def generate_storyboard_images(storyboard: Storyboard) -> Storyboard:
-    """Generate images for all storyboard frames sequentially with a delay to avoid quota exhaustion."""
+    """Generate images for all storyboard frames sequentially. Backoff/retry for 429s is handled in the client."""
     safe_title = _safe_title(storyboard.title)
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
     results = []
-    for i, frame in enumerate(storyboard.frames):
+    for frame in storyboard.frames:
         filename = f"{safe_title}_frame_{frame.frame_number:02d}.png"
         output_path = str(OUTPUTS_DIR / filename)
         logger.info(
@@ -58,10 +59,6 @@ async def generate_storyboard_images(storyboard: Storyboard) -> Storyboard:
                 "Frame {} image generation failed", frame.frame_number
             )
         results.append((frame.frame_number, result))
-
-        # Delay between requests to avoid 429 rate limiting
-        if i < len(storyboard.frames) - 1:
-            await asyncio.sleep(5)
 
     # Update frame image_path fields
     result_map = {frame_num: path for frame_num, path in results}
@@ -81,6 +78,7 @@ async def run_studioz_pipeline(
         screen_writer_persona: str,
         director_persona: str,
         force: bool = False,
+        render_video: bool = False,
     ) -> tuple:
     """Runs the full StudioZ pipeline from pitch to storyboard"""
     logger.info("Starting StudioZ pipeline for pitch: {}...", brief.pitch[:50])
@@ -155,7 +153,7 @@ async def run_studioz_pipeline(
             )
 
         print("Running Director Agent...")
-        storyboard = await agent_director(treatment, exec_review, director_persona)
+        storyboard = await agent_director(treatment, exec_review, director_persona, num_frames=brief.num_frames)
 
         print("\nRunning Image Generation for Storyboard Frames...")
         storyboard = await generate_storyboard_images(storyboard)
@@ -166,6 +164,25 @@ async def run_studioz_pipeline(
         storyboard_json_path.write_text(storyboard.model_dump_json(indent=2))
         logger.success("Storyboard saved: {}", storyboard_json_path)
         print(f"[Storyboard JSON] Saved to {storyboard_json_path}")
+
+        # Video rendering (opt-in via --render-video)
+        if render_video:
+            # Gate: check all frames have images before spending on TTS/video
+            failed_frames = [
+                f.frame_number for f in storyboard.frames if f.image_path is None
+            ]
+            if failed_frames:
+                print(f"\n[Video] Cannot proceed — {len(failed_frames)}/{len(storyboard.frames)} frames missing images.")
+                print(f"  Failed frames: {failed_frames}")
+                print(f"  Fix with: python -m studioz.regenerate_frame "
+                      f"--storyboard {storyboard_json_path} --frame <N>")
+                print(f"  Then re-run with --render-video.")
+            else:
+                video_path = await run_narration_pipeline(storyboard)
+                if video_path:
+                    print(f"\n[Video] Final output: {video_path}")
+                else:
+                    print("\n[Video] Video rendering failed (see logs above).")
 
         print("\n--- EXECUTIVE REVIEW ---")
         print(exec_review)
@@ -215,9 +232,21 @@ if __name__ == "__main__":
         default=False,
         help="Force Director/image generation even if the committee does not greenlight"
     )
+    parse_args.add_argument(
+        "--render-video",
+        action="store_true",
+        default=False,
+        help="Run narration + TTS + video assembly after storyboard generation"
+    )
+    parse_args.add_argument(
+        "--frames",
+        type=int,
+        default=3,
+        help="Number of storyboard frames to generate (default: 3)"
+    )
     args = parse_args.parse_args()
 
-    brief = PitchBrief(pitch=args.pitch)
+    brief = PitchBrief(pitch=args.pitch, num_frames=args.frames)
 
     # Run the async pipeline using asyncio
     asyncio.run(run_studioz_pipeline(
@@ -225,5 +254,6 @@ if __name__ == "__main__":
         args.screen_writer_persona, 
         args.director_persona,
         force=args.force,
+        render_video=args.render_video,
         )
     )
