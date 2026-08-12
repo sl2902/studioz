@@ -8,6 +8,7 @@ from studioz.schemas import ExecutiveReview, MemberReview, ScriptTreatment
 async def agent_consensus(
         script_treatment: ScriptTreatment, 
         reviews: list[MemberReview],
+        runtime_context: str = "",
     ) -> ExecutiveReview:
     """Synthesizes individual MemberReview feedback into a final ExecutiveReview"""
     persona = get_persona("consensus", "chair")
@@ -25,6 +26,9 @@ async def agent_consensus(
     Committee Member Reviews:
     {serialized_reviews}
     """
+
+    if runtime_context:
+        prompt += f"\n\n{runtime_context}"
 
     response = await client.aio.models.generate_content(
         model=settings.model_pro,

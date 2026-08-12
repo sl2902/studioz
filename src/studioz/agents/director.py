@@ -9,18 +9,43 @@ async def agent_director(
         script_treatment: ScriptTreatment, 
         review: ExecutiveReview,
         persona_key: str = "high_octane",
-        num_frames: int = 3,
+        beats: list[str] | None = None,
     ) -> Storyboard:
     """Receives treatment + notes and designs visual storyboard"""
+    if beats is None:
+        beats = ["Beginning", "Turning Point", "Ending"]
+
+    num_frames = len(beats)
     persona = get_persona("director", persona_key)
     logger.info("Director Agent active: '{}'", persona["name"])
     logger.info("Generating {}-frame storyboard via Structured Output", num_frames)
+
+    # Build the beat assignment text for the prompt
+    beat_assignments = "\n".join(
+        f"    - Frame {i+1}: {beat}" for i, beat in enumerate(beats)
+    )
 
     system_instruction = f"""
     You are a Visual Film Director.
     Create EXACTLY {num_frames} frames for the camera storyboard matching the approved script treatment and executive notes.
     You MUST produce exactly {num_frames} StoryboardFrame entries — no more, no fewer.
-    Provide rich visual details for each camera frame prompt.
+
+    Each frame corresponds to a specific narrative beat. Assign each frame's
+    content to match its designated beat:
+{beat_assignments}
+
+    Each frame's scene_description and imagen_prompt MUST reflect its assigned
+    narrative beat — e.g. the "Climax" frame should depict the story's most
+    intense/pivotal moment, "Setup" should establish the world/characters, etc.
+    Set each frame's narrative_beat field to its assigned beat label.
+
+    DIALOGUE/STAGING RULE:
+    - Each frame may feature AT MOST ONE character with spoken dialogue.
+    - If a scene naturally involves multiple speaking characters, split their
+      lines across separate frames (one character's line per frame).
+    - If additional characters must be present in a frame, fold their words into
+      the scene_description as reported/ambient speech rather than direct dialogue
+      (e.g. "In the background, the sonar technician calls out a warning").
 
     CRITICAL RULES for the imagen_prompt field:
     - Describe your directorial style using ONLY visual language: camera angles,

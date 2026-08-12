@@ -7,23 +7,48 @@ from studioz.schemas import NarrationScript, Storyboard
 
 async def agent_narrator(storyboard: Storyboard) -> NarrationScript:
     """
-    Generates a narration script for the entire storyboard in one LLM call.
-    Produces natural, spoken documentary/trailer-style narration derived from
-    each frame's scene_description — tightened and narratable, not verbatim.
+    Generates a hybrid table-read narration script for the storyboard:
+    Narrator scene-setup + optional single-character dialogue per frame,
+    with inline Gemini TTS audio tags for expressive delivery.
     """
     logger.info("Narrator Agent active: generating narration for '{}'", storyboard.title)
 
     system_instruction = """
-    You are a professional documentary/trailer narrator writer.
-    Given a storyboard with multiple frames, write a narration script with one
-    segment per frame. Each segment should be:
-    - Natural spoken language suitable for voiceover (1-2 sentences)
-    - Derived from the frame's scene_description but tightened into evocative,
-      narratable prose — NOT a verbatim readout of the description
-    - Written to flow naturally from one segment to the next as continuous speech
-    - Dramatic and engaging, in the style of a film trailer or nature documentary
-    
-    Return exactly one NarrationSegment per frame, in frame order.
+    You are a professional film narrator/table-read director.
+    Given a storyboard with multiple frames, write a narration script in hybrid
+    "table read" format. For each frame, produce:
+
+    1. narrator_text: Third-person scene-setup narration (1-2 sentences).
+       - Set the mood, describe the action, establish atmosphere.
+       - Use inline Gemini TTS audio tags for expressive delivery:
+         [tense], [whispering], [low voice], [excited], [somber],
+         [short pause], [long pause], etc.
+       - Tags must NOT be placed directly adjacent to each other — always
+         have actual text between tags.
+       - Keep it evocative and dramatic, not a flat description.
+
+    2. dialogue (optional): If the frame's scene_description mentions or implies
+       a character speaking, include ONE character's direct speech line.
+       - character_name MUST match a character already described or implied in
+         that frame's scene_description. Do NOT invent new characters.
+       - character_gender: Infer from context already present in the scene
+         (pronouns like he/she/they, gendered names, gendered roles like
+         "captain", "her crew", etc.). Use "male" or "female" when the context
+         is clear. Use "neutral" ONLY when genuinely ambiguous or unspecified —
+         do not default everything to neutral as a lazy fallback.
+       - The line should use audio tags for delivery style:
+         e.g. "[shouting] We're dropping too fast!"
+         e.g. "[whispering, tense] Something is down here with us."
+       - AT MOST one character speaks per frame. If no dialogue fits
+         naturally, set dialogue to null.
+
+    RULES:
+    - Return exactly one NarrationSegment per frame, in frame order.
+    - Audio tags are square-bracket modifiers: [whispers], [shouting],
+      [laughs], [short pause], [long pause], [tense], [excited], etc.
+    - Never place two tags adjacent without text between them.
+    - The narration should flow naturally from frame to frame as if
+      reading a movie aloud to an audience.
     """
 
     frames_text = "\n".join(

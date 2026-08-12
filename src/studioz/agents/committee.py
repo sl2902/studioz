@@ -10,6 +10,7 @@ async def agent_committee_member(
         persona_key: str,
         agent_config_key: str = "committee_member",
         grounding_context: str = "No grounding data available — rely on general knowledge",
+        budget_framing: str = "",
     ) -> MemberReview:
     """Executes a single committee member review with injected Parallel Search grounding context"""
     persona = get_persona(agent_config_key, persona_key)
@@ -28,6 +29,9 @@ async def agent_committee_member(
 
         Use the grounding data above to inform your review with real comparables where relevant. If the grounding data doesn't contain anything useful, say so explicitly in your key_points rather than inventing specifics.
         """
+
+    if budget_framing:
+        prompt += f"\n\n{budget_framing}"
 
     response = await client.aio.models.generate_content(
         model=settings.model_pro,
