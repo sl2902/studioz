@@ -7,6 +7,7 @@ from studioz.agents import (
     agent_director
 )
 from studioz.schemas import (
+    PitchBrief,
     ScriptTreatment,
     MemberReview,
     ExecutiveReview,
@@ -28,7 +29,7 @@ async def test_agent_screenwriter(mock_vertex_client):
     mock_response.parsed = expected_parsed
     mock_vertex_client.aio.models.generate_content.return_value = mock_response
 
-    res = await agent_screenwriter("My Pitch", "blockbuster")
+    res = await agent_screenwriter(PitchBrief(pitch="My Pitch"), "blockbuster")
     assert res == expected_parsed
 
     call_kwargs = mock_vertex_client.aio.models.generate_content.call_args.kwargs
@@ -41,7 +42,7 @@ async def test_agent_screenwriter(mock_vertex_client):
 
     mock_vertex_client.aio.models.generate_content.side_effect = Exception("Vertex error")
     with pytest.raises(Exception) as excinfo:
-        await agent_screenwriter("My Pitch", "blockbuster")
+        await agent_screenwriter(PitchBrief(pitch="My Pitch"), "blockbuster")
     assert "Vertex error" in str(excinfo.value)
     mock_vertex_client.aio.models.generate_content.side_effect = None
 

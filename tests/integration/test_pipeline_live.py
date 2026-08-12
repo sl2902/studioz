@@ -1,6 +1,6 @@
 import pytest
 from studioz.pipeline import run_studioz_pipeline
-from studioz.schemas import ScriptTreatment, ExecutiveReview, Storyboard
+from studioz.schemas import PitchBrief, ScriptTreatment, ExecutiveReview, Storyboard
 
 @pytest.mark.integration
 async def test_pipeline_live():
@@ -8,9 +8,10 @@ async def test_pipeline_live():
         "A deep-sea mining crew discovers an alien monolith at the bottom of the "
         "Mariana Trench that begins sending signals into space."
     )
+    brief = PitchBrief(pitch=test_pitch)
     
     treatment, exec_review, storyboard = await run_studioz_pipeline(
-        user_pitch=test_pitch,
+        brief=brief,
         screen_writer_persona="blockbuster",
         director_persona="high_octane"
     )

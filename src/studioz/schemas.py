@@ -4,6 +4,18 @@ from pydantic import BaseModel, Field
 
 # Defined schemas for structured agent responses
 
+class PitchBrief(BaseModel):
+    pitch: str = Field(description="The raw pitch/premise text")
+    film_type: Literal["feature", "short"] = Field(
+        default="feature", description="Whether this is a feature film or short film"
+    )
+    target_runtime_minutes: int | None = Field(
+        default=None,
+        description="Target runtime in minutes, if constrained (e.g. short film festival limits). "
+                    "If set, this overrides the screenwriter's own runtime estimate deterministically."
+    )
+
+
 class ScriptTreatment(BaseModel):
     title: str = Field(description="Catchy working title for the film")
     genre: str = Field(description="Primary film genre(s)")

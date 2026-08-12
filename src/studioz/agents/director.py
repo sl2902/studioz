@@ -19,6 +19,17 @@ async def agent_director(
     You are a Visual Film Director.
     Create a 3-frame camera storyboard matching the approved script treatment and executive notes.
     Provide rich visual details for each camera frame prompt.
+
+    CRITICAL RULES for the imagen_prompt field:
+    - Describe your directorial style using ONLY visual language: camera angles,
+      lens choices, lighting setups, color palettes, movement, composition.
+    - NEVER include your persona name or any director/cinematographer name as
+      literal text in the imagen_prompt. The image model will render names as
+      on-screen text captions if included.
+    - Do NOT include any text overlays, captions, titles, HUD elements, logos,
+      or watermarks in your image descriptions.
+    - Each imagen_prompt should describe a pure visual scene — what the camera
+      sees — with no text or UI elements of any kind.
     """
     
     prompt = f"""

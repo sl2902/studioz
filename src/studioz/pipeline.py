@@ -13,7 +13,7 @@ from studioz.agents import (
 )
 from studioz.clients.parallel_search import fetch_parallel_grounding
 from studioz.clients.image_client import generate_frame_image
-from studioz.schemas import Storyboard
+from studioz.schemas import PitchBrief, ScriptTreatment, Storyboard
 
 
 OUTPUTS_DIR = Path("outputs/storyboard")
@@ -24,12 +24,25 @@ def _safe_title(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")
 
 
+def enforce_runtime_target(treatment: ScriptTreatment, brief: PitchBrief) -> ScriptTreatment:
+    """
+    If a target runtime was specified in the brief, override the LLM's own
+    estimate deterministically — no tolerance band, exact override. This
+    guarantees the field is correct without trusting the LLM to honor a
+    numeric instruction precisely.
+    """
+    if brief.target_runtime_minutes is not None:
+        treatment.estimated_runtime_minutes = brief.target_runtime_minutes
+    return treatment
+
+
 async def generate_storyboard_images(storyboard: Storyboard) -> Storyboard:
-    """Generate images for all storyboard frames concurrently via Imagen."""
+    """Generate images for all storyboard frames sequentially with a delay to avoid quota exhaustion."""
     safe_title = _safe_title(storyboard.title)
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    async def _generate_for_frame(frame):
+    results = []
+    for i, frame in enumerate(storyboard.frames):
         filename = f"{safe_title}_frame_{frame.frame_number:02d}.png"
         output_path = str(OUTPUTS_DIR / filename)
         logger.info(
@@ -44,11 +57,11 @@ async def generate_storyboard_images(storyboard: Storyboard) -> Storyboard:
             logger.warning(
                 "Frame {} image generation failed", frame.frame_number
             )
-        return frame.frame_number, result
+        results.append((frame.frame_number, result))
 
-    results = await asyncio.gather(
-        *[_generate_for_frame(frame) for frame in storyboard.frames]
-    )
+        # Delay between requests to avoid 429 rate limiting
+        if i < len(storyboard.frames) - 1:
+            await asyncio.sleep(5)
 
     # Update frame image_path fields
     result_map = {frame_num: path for frame_num, path in results}
@@ -64,16 +77,18 @@ async def generate_storyboard_images(storyboard: Storyboard) -> Storyboard:
 
 
 async def run_studioz_pipeline(
-        user_pitch: str,
+        brief: PitchBrief,
         screen_writer_persona: str,
         director_persona: str,
+        force: bool = False,
     ) -> tuple:
     """Runs the full StudioZ pipeline from pitch to storyboard"""
-    logger.info("Starting StudioZ pipeline for pitch: {}...", user_pitch[:50])
+    logger.info("Starting StudioZ pipeline for pitch: {}...", brief.pitch[:50])
 
     try:
         print("Running Screenwriter Agent...")
-        treatment = await agent_screenwriter(user_pitch, screen_writer_persona)
+        treatment = await agent_screenwriter(brief, screen_writer_persona)
+        treatment = enforce_runtime_target(treatment, brief)
 
         print("Fetching Parallel Search grounding data...")
         grounding = await fetch_parallel_grounding(treatment)
@@ -115,6 +130,29 @@ async def run_studioz_pipeline(
 
         print(f"\n[Executive Consensus] Greenlight: {exec_review.greenlight}")
         print(f"Summary: {exec_review.summary}")
+
+        # Greenlight gate: skip director/image generation if not approved
+        if not exec_review.greenlight and not force:
+            print("\n--- PROJECT NOT GREENLIT ---")
+            print("Skipping Director and image generation.")
+            print("\n--- EXECUTIVE REVIEW ---")
+            print(f"Summary: {exec_review.summary}")
+            print(f"Budget estimate: ${exec_review.estimated_budget_millions}M")
+            print(f"Target demographic: {exec_review.target_demographic}")
+            print(f"Financial risks:")
+            for risk in exec_review.finacial_risks:
+                print(f"  - {risk}")
+            print(f"Required script notes:")
+            for note in exec_review.required_script_notes:
+                print(f"  - {note}")
+            logger.info("Pipeline stopped at greenlight gate (not approved).")
+            return treatment, exec_review, None
+
+        if not exec_review.greenlight and force:
+            logger.warning(
+                "Committee did NOT greenlight this project — proceeding to "
+                "storyboard generation due to --force override."
+            )
 
         print("Running Director Agent...")
         storyboard = await agent_director(treatment, exec_review, director_persona)
@@ -171,12 +209,21 @@ if __name__ == "__main__":
         choices = ["high_octane", "cinematic_noir"],
         help="Persona key for the director agent"
     )
+    parse_args.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Force Director/image generation even if the committee does not greenlight"
+    )
     args = parse_args.parse_args()
+
+    brief = PitchBrief(pitch=args.pitch)
 
     # Run the async pipeline using asyncio
     asyncio.run(run_studioz_pipeline(
-        args.pitch, 
+        brief, 
         args.screen_writer_persona, 
-        args.director_persona
+        args.director_persona,
+        force=args.force,
         )
     )
