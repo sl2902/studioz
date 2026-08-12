@@ -9,7 +9,7 @@ from pathlib import Path
 from loguru import logger
 
 from studioz.agents.narrator import agent_narrator
-from studioz.clients.tts_client import generate_narration_audio
+from studioz.clients.tts_client import build_voice_map, generate_narration_audio
 from studioz.clients.video_builder import build_video, get_audio_duration
 from studioz.schemas import NarrationScript, Storyboard
 
@@ -29,12 +29,17 @@ def _calculate_frame_durations(
     Compute per-frame durations proportional to narration text length,
     normalized so they sum exactly to total_audio_duration.
     """
-    # Use word count as the proxy for relative duration
-    word_counts = [len(seg.narration_text.split()) for seg in narration.segments]
+    # Use total word count per segment (narrator_text + dialogue line if present)
+    word_counts = []
+    for seg in narration.segments:
+        wc = len(seg.narrator_text.split())
+        if seg.dialogue:
+            wc += len(seg.dialogue.line.split())
+        word_counts.append(wc)
+
     total_words = sum(word_counts)
 
     if total_words == 0:
-        # Fallback: equal split
         n = len(narration.segments)
         return [total_audio_duration / n] * n
 
@@ -60,11 +65,12 @@ def _calculate_frame_durations(
 async def run_narration_pipeline(storyboard: Storyboard) -> str | None:
     """
     Full narration-to-video pipeline:
-    1. Generate narration script from storyboard
-    2. Generate TTS audio from narration
-    3. Measure audio duration
-    4. Build per-frame timeline
-    5. Assemble final video
+    1. Generate narration script (table-read format) from storyboard
+    2. Build character voice map
+    3. Generate per-frame TTS audio and concatenate
+    4. Measure audio duration
+    5. Build per-frame timeline
+    6. Assemble final video
 
     Returns path to the final .mp4 on success, None on failure.
     """
@@ -76,22 +82,33 @@ async def run_narration_pipeline(storyboard: Storyboard) -> str | None:
 
     print(f"\n[Narration Script] {len(narration.segments)} segments:")
     for seg in narration.segments:
-        print(f"  Frame {seg.frame_number}: {seg.narration_text}")
+        dialogue_info = ""
+        if seg.dialogue:
+            dialogue_info = f" | {seg.dialogue.character_name}: \"{seg.dialogue.line}\""
+        print(f"  Frame {seg.frame_number}: {seg.narrator_text}{dialogue_info}")
 
-    # Step 2: Generate TTS audio (single continuous file)
-    full_narration_text = " ".join(seg.narration_text for seg in narration.segments)
+    # Step 2: Build voice map
+    voice_map = build_voice_map(narration.segments)
+    if voice_map:
+        print(f"\n[Voice Map]")
+        for char, voice in voice_map.items():
+            print(f"  {char} -> {voice}")
+    else:
+        print("\n[Voice Map] No character dialogue — narrator only.")
+
+    # Step 3: Generate per-frame TTS audio (concatenated into one file)
     audio_dir = Path("outputs/audio")
     audio_dir.mkdir(parents=True, exist_ok=True)
     audio_path = str(audio_dir / f"{safe_title}_narration.wav")
 
-    print("\nGenerating narration audio via TTS...")
-    result = await generate_narration_audio(full_narration_text, audio_path)
+    print("\nGenerating narration audio via TTS (per-frame)...")
+    result = await generate_narration_audio(narration.segments, voice_map, audio_path)
     if result is None:
         logger.error("TTS generation failed — cannot assemble video")
         print("[Video] TTS generation failed. Skipping video assembly.")
         return None
 
-    # Step 3: Measure audio duration
+    # Step 4: Measure audio duration
     total_duration = await get_audio_duration(audio_path)
     if total_duration is None:
         logger.error("Could not measure audio duration — cannot assemble video")
@@ -100,14 +117,13 @@ async def run_narration_pipeline(storyboard: Storyboard) -> str | None:
 
     print(f"[Audio] Duration: {total_duration:.2f}s")
 
-    # Step 4: Build per-frame timeline
+    # Step 5: Build per-frame timeline
     durations = _calculate_frame_durations(narration, total_duration)
     print(f"\n[Timeline] Per-frame durations (total={sum(durations):.2f}s):")
     for seg, dur in zip(narration.segments, durations):
         print(f"  Frame {seg.frame_number}: {dur:.2f}s")
 
-    # Step 5: Assemble video
-    # Collect frame image paths (only frames that have images)
+    # Step 6: Assemble video
     frame_image_paths = []
     frame_durations = []
     for i, frame in enumerate(storyboard.frames):

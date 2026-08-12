@@ -37,6 +37,21 @@ def enforce_runtime_target(treatment: ScriptTreatment, brief: PitchBrief) -> Scr
     return treatment
 
 
+def get_storyboard_plan(runtime_minutes: int) -> list[str]:
+    """
+    Returns the ordered list of narrative beats to storyboard, based on
+    runtime. Frame count is len(the returned list). Max 6 frames.
+    """
+    if runtime_minutes <= 15:
+        return ["Beginning", "Turning Point", "Ending"]
+    elif runtime_minutes <= 45:
+        return ["Setup", "Rising Action", "Climax", "Resolution"]
+    elif runtime_minutes <= 90:
+        return ["Setup", "Inciting Incident", "Midpoint", "Climax", "Resolution"]
+    else:
+        return ["Setup", "Inciting Incident", "Midpoint", "Dark Night of the Soul", "Climax", "Resolution"]
+
+
 async def generate_storyboard_images(storyboard: Storyboard) -> Storyboard:
     """Generate images for all storyboard frames sequentially. Backoff/retry for 429s is handled in the client."""
     safe_title = _safe_title(storyboard.title)
@@ -92,12 +107,31 @@ async def run_studioz_pipeline(
         grounding = await fetch_parallel_grounding(treatment)
 
         print("\nRunning Committee Review CONCURRENTLY...")
+        # Build runtime-aware budget framing for the CFO
+        cfo_budget_framing = (
+            f"BUDGET ASSESSMENT FRAMING: This treatment's estimated_runtime_minutes is "
+            f"{treatment.estimated_runtime_minutes} and the film_type is '{brief.film_type}'. "
+            "When assessing budget viability, explicitly weigh these values. "
+            "Do NOT default to feature-scale budget assumptions regardless of the stated runtime. "
+            "Use tiered norms rather than a single bucket:\n"
+            "  - Micro-short (under 5 minutes): typically well under $500K, often a few thousand "
+            "to low tens-of-thousands for a lean/self-produced piece.\n"
+            "  - Short (5-20 minutes): typically under $1-2M, often far less for festival-scale "
+            "or indie productions.\n"
+            "  - Extended short (20-40 minutes): typically $2-5M range.\n"
+            "  - Feature (40+ minutes): standard feature-film budget norms apply.\n"
+            "A 3-minute piece and a 35-minute piece are both 'short films' but should NOT be "
+            "assessed against the same budget expectations — scale reasoning to the actual "
+            "runtime within the short-film range, not just whether it clears the feature-length threshold."
+        )
+
         cfo_review, creative_review, legal_review = await asyncio.gather(
             agent_committee_member(
                 treatment, 
                 "cfo", 
                 agent_config_key="committee_member", 
-                grounding_context=grounding.budget_comps
+                grounding_context=grounding.budget_comps,
+                budget_framing=cfo_budget_framing,
             ),
             agent_committee_member(
                 treatment, 
@@ -122,8 +156,16 @@ async def run_studioz_pipeline(
                 print(f" - {pt}")
 
         print("\nRunning Consensus Agent...")
+        consensus_runtime_context = (
+            f"NOTE: This is a {brief.film_type} film with an estimated runtime of "
+            f"{treatment.estimated_runtime_minutes} minutes. The estimated_budget_millions "
+            "you produce should be scaled appropriately to this runtime and film type — "
+            "defer to the CFO's runtime-aware budget assessment rather than applying "
+            "feature-scale assumptions independently."
+        )
         exec_review = await agent_consensus(
-            treatment, [cfo_review, creative_review, legal_review]
+            treatment, [cfo_review, creative_review, legal_review],
+            runtime_context=consensus_runtime_context,
         )
 
         print(f"\n[Executive Consensus] Greenlight: {exec_review.greenlight}")
@@ -153,7 +195,9 @@ async def run_studioz_pipeline(
             )
 
         print("Running Director Agent...")
-        storyboard = await agent_director(treatment, exec_review, director_persona, num_frames=brief.num_frames)
+        beats = get_storyboard_plan(treatment.estimated_runtime_minutes)
+        logger.info("Storyboard plan: {} frames, beats={}", len(beats), beats)
+        storyboard = await agent_director(treatment, exec_review, director_persona, beats=beats)
 
         print("\nRunning Image Generation for Storyboard Frames...")
         storyboard = await generate_storyboard_images(storyboard)
@@ -238,15 +282,9 @@ if __name__ == "__main__":
         default=False,
         help="Run narration + TTS + video assembly after storyboard generation"
     )
-    parse_args.add_argument(
-        "--frames",
-        type=int,
-        default=3,
-        help="Number of storyboard frames to generate (default: 3)"
-    )
     args = parse_args.parse_args()
 
-    brief = PitchBrief(pitch=args.pitch, num_frames=args.frames)
+    brief = PitchBrief(pitch=args.pitch)
 
     # Run the async pipeline using asyncio
     asyncio.run(run_studioz_pipeline(

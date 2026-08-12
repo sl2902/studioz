@@ -14,9 +14,6 @@ class PitchBrief(BaseModel):
         description="Target runtime in minutes, if constrained (e.g. short film festival limits). "
                     "If set, this overrides the screenwriter's own runtime estimate deterministically."
     )
-    num_frames: int = Field(
-        default=3, description="Number of storyboard frames to generate"
-    )
 
 
 class ScriptTreatment(BaseModel):
@@ -45,6 +42,7 @@ class ExecutiveReview(BaseModel):
 
 class StoryboardFrame(BaseModel):
     frame_number: int = Field(description="Sequential position of this frame in the storyboard")
+    narrative_beat: str | None = Field(default=None, description="Narrative beat this frame represents, e.g. 'Inciting Incident', 'Climax'")
     scene_description: str = Field(description="Narrative description of the action in this frame")
     camera_angle: str = Field(description="e.g. Close-up, Wide shot, Bird's eye")
     imagen_prompt: str = Field(description="Detailed prompt suitable for image generation")
@@ -74,9 +72,31 @@ class MemberReview(BaseModel):
     )
 
 
+class DialogueLine(BaseModel):
+    character_name: str = Field(
+        description="Name of the speaking character, matching a character already present in the frame's scene_description"
+    )
+    character_gender: Literal["male", "female", "neutral"] = Field(
+        default="neutral",
+        description="Inferred gender of the character, based on context (pronouns, name, role) already present "
+                    "in the treatment/scene — used to select an appropriately-sounding TTS voice"
+    )
+    line: str = Field(
+        description="The character's spoken line, with inline Gemini TTS audio tags where appropriate, "
+                    "e.g. '[shouting] We're dropping too fast!'"
+    )
+
+
 class NarrationSegment(BaseModel):
     frame_number: int = Field(description="Which storyboard frame this narration accompanies")
-    narration_text: str = Field(description="Spoken-language narration for this frame, a sentence or two")
+    narrator_text: str = Field(
+        description="Third-person scene-setup narration, with inline audio tags, "
+                    "e.g. '[tense, low voice] Water sprays through cracked rivets.'"
+    )
+    dialogue: DialogueLine | None = Field(
+        default=None,
+        description="At most one character's dialogue line for this frame, or None if the frame has no spoken dialogue"
+    )
 
 
 class NarrationScript(BaseModel):
