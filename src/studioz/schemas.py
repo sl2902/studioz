@@ -107,3 +107,15 @@ class NarrationScript(BaseModel):
 class FrameInspectionResult(BaseModel):
     passed: bool = Field(description="Whether the generated image matches its intended content and constraints")
     issues: list[str] = Field(default_factory=list, description="Specific problems found, empty if passed=True")
+
+
+class SearchResultCitation(BaseModel):
+    title: str = Field(description="Page title from search result")
+    url: str = Field(description="Source URL")
+    snippet: str = Field(description="Relevant text excerpt")
+
+
+class GroundingCitations(BaseModel):
+    budget_comps: list[SearchResultCitation] = Field(default_factory=list)
+    market_trends: list[SearchResultCitation] = Field(default_factory=list)
+    ip_clearance: list[SearchResultCitation] = Field(default_factory=list)

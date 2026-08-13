@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from parallel import AsyncParallel
 from studioz.config import settings
 from studioz.ledger import ledger, LedgerEntry
+from studioz.schemas import SearchResultCitation, GroundingCitations
 
 # Trusted domain lists
 BUDGET_COMPS_DOMAINS = ["boxofficemojo.com", "the-numbers.com", "variety.com", "hollywoodreporter.com"]
@@ -72,6 +73,20 @@ def _format_results_list(results_list: list) -> str:
     return "\n\n".join(formatted_items) if formatted_items else "No grounding data available — rely on general knowledge"
 
 
+def _extract_citations(results_list: list) -> list[SearchResultCitation]:
+    """Extracts structured citation objects from raw search result items."""
+    citations = []
+    for item in results_list:
+        title = getattr(item, "title", "Untitled")
+        url = getattr(item, "url", "")
+        excerpts = getattr(item, "excerpts", [])
+        snippet = " ".join(excerpts) if excerpts else getattr(item, "snippet", "")
+        if not snippet and hasattr(item, "content"):
+            snippet = str(item.content)[:200]
+        citations.append(SearchResultCitation(title=title, url=url, snippet=snippet))
+    return citations
+
+
 async def _execute_search_call(client: AsyncParallel, query: str, domain_name: str, include_domains: list[str] = None) -> list:
     """Executes a single search call against Parallel API, with optional domain restriction."""
     max_results = settings.parallel_max_results
@@ -113,7 +128,7 @@ async def _execute_search_call(client: AsyncParallel, query: str, domain_name: s
     return getattr(res, "results", []) or []
 
 
-async def _fetch_single_domain_search(client: AsyncParallel, query: str, domain_name: str) -> str:
+async def _fetch_single_domain_search(client: AsyncParallel, query: str, domain_name: str) -> tuple[str, list[SearchResultCitation]]:
     """Executes two-pass search request using the Parallel Search API with fallback handling."""
     max_results = settings.parallel_max_results
 
@@ -144,7 +159,7 @@ async def _fetch_single_domain_search(client: AsyncParallel, query: str, domain_
     # Check if first pass met the quota
     if pass1_success and len(pass1_results) >= max_results:
         logger.info(f"Resolved '{domain_name}' via domain-restricted search only (returned {len(pass1_results)} results).")
-        return _format_results_list(pass1_results)
+        return (_format_results_list(pass1_results), _extract_citations(pass1_results))
 
     # Second pass: unrestricted fallback
     print(f"[Parallel Search] Firing unrestricted query fallback for '{domain_name}': \"{query}\"")
@@ -166,10 +181,10 @@ async def _fetch_single_domain_search(client: AsyncParallel, query: str, domain_
                 f"Resolved '{domain_name}' with fallback. Combined {len(pass1_results)} domain-restricted and "
                 f"{len(combined) - len(pass1_results)} unrestricted results (total: {len(combined)})."
             )
-            return _format_results_list(combined)
+            return (_format_results_list(combined), _extract_citations(combined))
         else:
             logger.info(f"Resolved '{domain_name}' via unrestricted search only (returned {len(pass2_results)} results).")
-            return _format_results_list(pass2_results)
+            return (_format_results_list(pass2_results), _extract_citations(pass2_results))
 
     except Exception as e:
         logger.warning(f"Unrestricted Parallel Search call failed for '{domain_name}': {e}")
@@ -178,12 +193,12 @@ async def _fetch_single_domain_search(client: AsyncParallel, query: str, domain_
         # If unrestricted failed but we had some partial results from pass 1, return those
         if pass1_results:
             logger.info(f"Unrestricted search failed. Returning partial domain-restricted results for '{domain_name}' (total: {len(pass1_results)}).")
-            return _format_results_list(pass1_results)
+            return (_format_results_list(pass1_results), _extract_citations(pass1_results))
             
-        return "No grounding data available — rely on general knowledge"
+        return ("No grounding data available — rely on general knowledge", [])
 
 
-async def fetch_parallel_grounding(treatment) -> ParallelGroundingResults:
+async def fetch_parallel_grounding(treatment) -> tuple[ParallelGroundingResults, GroundingCitations]:
     """Runs Parallel Search API calls concurrently across all three committee domains."""
     t0 = time.perf_counter()
     api_key = settings.parallel_web_api_key
@@ -193,11 +208,15 @@ async def fetch_parallel_grounding(treatment) -> ParallelGroundingResults:
     q_market = build_market_trend_query(treatment)
     q_ip = build_ip_clearance_query(treatment)
 
-    budget_res, market_res, ip_res = await asyncio.gather(
+    budget_result, market_result, ip_result = await asyncio.gather(
         _fetch_single_domain_search(client, q_budget, "budget_comps"),
         _fetch_single_domain_search(client, q_market, "market_trends"),
         _fetch_single_domain_search(client, q_ip, "ip_clearance")
     )
+
+    budget_res, budget_citations = budget_result
+    market_res, market_citations = market_result
+    ip_res, ip_citations = ip_result
 
     latency = time.perf_counter() - t0
     ledger.record(LedgerEntry(
@@ -208,8 +227,16 @@ async def fetch_parallel_grounding(treatment) -> ParallelGroundingResults:
         success=True,
     ))
 
-    return ParallelGroundingResults(
+    grounding = ParallelGroundingResults(
         budget_comps=budget_res,
         market_trends=market_res,
         ip_clearance=ip_res
     )
+
+    citations = GroundingCitations(
+        budget_comps=budget_citations,
+        market_trends=market_citations,
+        ip_clearance=ip_citations,
+    )
+
+    return grounding, citations

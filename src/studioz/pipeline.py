@@ -227,7 +227,7 @@ async def run_studioz_pipeline(
         treatment = enforce_runtime_target(treatment, brief)
 
         print("Fetching Parallel Search grounding data...")
-        grounding = await fetch_parallel_grounding(treatment)
+        grounding, citations = await fetch_parallel_grounding(treatment)
 
         print("\nRunning Committee Review CONCURRENTLY...")
         # Build runtime-aware budget framing for the CFO
@@ -310,7 +310,7 @@ async def run_studioz_pipeline(
                 print(f"  - {note}")
             logger.info("Pipeline stopped at greenlight gate (not approved).")
             print(ledger.summary())
-            return treatment, exec_review, None
+            return treatment, exec_review, None, citations
 
         if not exec_review.greenlight and force:
             logger.warning(
@@ -364,7 +364,7 @@ async def run_studioz_pipeline(
 
         print(ledger.summary())
 
-        return treatment, exec_review, storyboard
+        return treatment, exec_review, storyboard, citations
 
     except Exception as e:
         logger.error(f"Pipeline failed: {e}")
