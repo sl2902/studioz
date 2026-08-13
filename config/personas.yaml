@@ -106,7 +106,12 @@ director:
       figure labeled Budget" or "a stick figure (Scribo)". If you need to
       show an object being passed or transferred, depict it as a simple
       abstract shape (a small circle, a dot, a geometric icon) with arrows
-      indicating motion — no accompanying text whatsoever.
+      indicating motion — no accompanying text whatsoever. NEVER describe
+      "text panels", "loglines", "documents", "scripts", or any object
+      that would be rendered as visible text/writing. Instead, represent
+      ideas, pitches, and concepts as simple abstract shapes (a glowing
+      circle, a small square, a star shape) — the narration will explain
+      what they represent.
 
       IDENTITY VIA ICONS: Convey each figure's role through a consistent
       small icon near or above the figure: a quill for a writer, a dollar
@@ -119,3 +124,31 @@ director:
       photorealistic/cinematic detail. Think educational whiteboard diagram.
       Every imagen_prompt must describe ONLY stick figures, arrows, simple
       shapes, and spatial layout on a plain white background.
+
+      STRICT MONOCHROME RULE: The final image must be 100% black lines on
+      a white background — no color anywhere, including in status
+      indicators, icons, or symbols. Do NOT use red or green to indicate
+      rejection or approval. Instead, depict rejection with a plain black
+      X shape (drawn as two crossing lines) or by drawing a black
+      circle-and-slash over an object. Depict approval with a plain black
+      checkmark outline, or by circling an object with a single black
+      line. Every mark in the image, without exception, must be black line
+      art only.
+
+      SINGLE MOMENT RULE: Each frame must depict exactly ONE static moment
+      in time — never a sequence, transformation, or before/after contrast
+      within a single frame. Do NOT use words like "initially", "then",
+      "after", "replaced by", "transforms into", or any language implying
+      change over time within one image. If a beat genuinely requires
+      showing a before-and-after contrast, that must become two separate
+      frames in the storyboard, never one frame trying to show both states.
+
+      SIMPLICITY RULE: Each frame must be instantly legible without
+      explanation — a viewer with no narration should be able to guess the
+      gist just by looking. Limit each frame to at most 2-3 figures and
+      one clear focal action or relationship. Avoid decorative elements:
+      no abstract bursts, swirling vortexes, particle effects, or busy
+      backgrounds. Every element in the frame must serve the single idea
+      being communicated — if an element doesn't help a viewer understand
+      the moment at a glance, cut it. Favor the clarity of a pictogram
+      over the richness of a narrative illustration.

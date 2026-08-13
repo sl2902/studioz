@@ -1,8 +1,10 @@
 import asyncio
 import re
+import time
 from argparse import ArgumentParser
 from pathlib import Path
 
+from google.genai import types
 from loguru import logger
 
 from studioz.agents import (
@@ -11,13 +13,100 @@ from studioz.agents import (
     agent_director,
     agent_screenwriter,
 )
+from studioz.clients.inspector import inspect_frame
 from studioz.clients.parallel_search import fetch_parallel_grounding
 from studioz.clients.image_client import generate_frame_image
+from studioz.clients.vertex_client import client
+from studioz.config import settings
+from studioz.ledger import ledger, LedgerEntry, estimate_text_cost
 from studioz.narration_pipeline import run_narration_pipeline
 from studioz.schemas import PitchBrief, ScriptTreatment, Storyboard
 
 
 OUTPUTS_DIR = Path("outputs/storyboard")
+
+# Color words banned in stick_figure prompts (case-insensitive regex)
+_BANNED_COLOR_PATTERN = re.compile(
+    r"\b(red|green|blue|orange|yellow|purple|pink|colou?r(?:ed|ful)?)\b",
+    re.IGNORECASE,
+)
+
+
+def contains_color_language(imagen_prompt: str) -> bool:
+    """Case-insensitive check for banned color words in a prompt."""
+    return bool(_BANNED_COLOR_PATTERN.search(imagen_prompt))
+
+
+async def _rewrite_prompt_remove_color(imagen_prompt: str) -> str:
+    """
+    Use a cheap text model to rewrite a prompt, removing all color references
+    while preserving content and meaning. Replaces color-based status indicators
+    with shape-based equivalents.
+    """
+    rewrite_instruction = (
+        "Rewrite the following image generation prompt to remove ALL color references "
+        "while preserving the same content and meaning. Replace color-based status "
+        "indicators (red X, green checkmark, red warning, green light) with shape-based "
+        "equivalents (plain black X shape, plain black checkmark outline, black warning "
+        "triangle, black circle outline). The rewritten prompt must describe ONLY black "
+        "line art on a white background. Return ONLY the rewritten prompt, nothing else."
+    )
+    try:
+        response = await client.aio.models.generate_content(
+            model=settings.model_fast,
+            contents=f"{rewrite_instruction}\n\nOriginal prompt:\n{imagen_prompt}",
+            config=types.GenerateContentConfig(temperature=0.1),
+        )
+        rewritten = response.text.strip()
+        # Sanity check: if the rewrite still contains color words, fall back to regex stripping
+        if contains_color_language(rewritten):
+            logger.warning("Rewrite still contains color words — applying regex fallback")
+            rewritten = _BANNED_COLOR_PATTERN.sub("black", rewritten)
+        return rewritten
+    except Exception as e:
+        logger.warning("Color rewrite failed ({}), applying regex fallback", e)
+        return _BANNED_COLOR_PATTERN.sub("black", imagen_prompt)
+
+
+async def validate_and_rewrite_prompts(storyboard: Storyboard, image_style: str) -> Storyboard:
+    """
+    Upstream validation: for stick_figure-style frames, check each imagen_prompt
+    for banned color words. If found, rewrite the prompt using a cheap text model
+    BEFORE any image generation happens.
+    """
+    if image_style != "stick_figure":
+        return storyboard
+
+    for frame in storyboard.frames:
+        if contains_color_language(frame.imagen_prompt):
+            logger.warning(
+                "Frame {} imagen_prompt contains color language — rewriting upstream",
+                frame.frame_number,
+            )
+            logger.debug("Original prompt: {}", frame.imagen_prompt)
+
+            t0 = time.perf_counter()
+            rewritten = await _rewrite_prompt_remove_color(frame.imagen_prompt)
+            latency = t0 and time.perf_counter() - t0
+
+            # Get token usage from response if available
+            cost = estimate_text_cost(settings.model_fast, 500, 500)  # Approximate
+            ledger.record(LedgerEntry(
+                step_name=f"color_rewrite_frame_{frame.frame_number}",
+                latency_seconds=latency,
+                estimated_cost_usd=cost,
+                model=settings.model_fast,
+                success=True,
+            ))
+
+            logger.info(
+                "Frame {} prompt rewritten in {:.1f}s — color words removed",
+                frame.frame_number, latency,
+            )
+            logger.debug("Rewritten prompt: {}", rewritten)
+            frame.imagen_prompt = rewritten
+
+    return storyboard
 
 
 def _safe_title(title: str) -> str:
@@ -57,6 +146,14 @@ async def generate_storyboard_images(storyboard: Storyboard, image_style: str = 
     safe_title = _safe_title(storyboard.title)
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Build style constraints string based on image_style
+    if image_style == "stick_figure":
+        style_constraints = "Zero legible text of any kind. Black and white only — no color. Stick-figure line art style — no photorealism."
+    else:
+        style_constraints = "No on-screen text, captions, logos, or watermarks. Cinematic photorealistic style."
+
+    MAX_INSPECTION_RETRIES = 2
+
     results = []
     for frame in storyboard.frames:
         filename = f"{safe_title}_frame_{frame.frame_number:02d}.png"
@@ -69,6 +166,31 @@ async def generate_storyboard_images(storyboard: Storyboard, image_style: str = 
             logger.success(
                 "Frame {} image saved: {}", frame.frame_number, result
             )
+            # Inspection loop
+            for inspection_attempt in range(MAX_INSPECTION_RETRIES + 1):
+                # Generate image (first time already done above, subsequent are retries)
+                if inspection_attempt > 0:
+                    logger.info("Regenerating frame {} (inspection retry {}/{})", frame.frame_number, inspection_attempt, MAX_INSPECTION_RETRIES)
+                    result = await generate_frame_image(frame.imagen_prompt, output_path, style=image_style)
+                    if result is None:
+                        break
+
+                # Inspect
+                t0_inspect = time.perf_counter()
+                inspection = await inspect_frame(result, frame.imagen_prompt, style_constraints)
+                inspect_latency = time.perf_counter() - t0_inspect
+                ledger.record(LedgerEntry(
+                    step_name=f"inspect_frame_{frame.frame_number}",
+                    latency_seconds=inspect_latency,
+                    estimated_cost_usd=0.005,
+                    model=settings.model_fast,
+                    success=True,
+                ))
+
+                if inspection.passed:
+                    break
+                elif inspection_attempt == MAX_INSPECTION_RETRIES:
+                    logger.warning("Frame {} failed inspection after {} retries — keeping last version. Issues: {}", frame.frame_number, MAX_INSPECTION_RETRIES, inspection.issues)
         else:
             logger.warning(
                 "Frame {} image generation failed", frame.frame_number
@@ -97,6 +219,7 @@ async def run_studioz_pipeline(
     ) -> tuple:
     """Runs the full StudioZ pipeline from pitch to storyboard"""
     logger.info("Starting StudioZ pipeline for pitch: {}...", brief.pitch[:50])
+    ledger._entries = []
 
     try:
         print("Running Screenwriter Agent...")
@@ -186,6 +309,7 @@ async def run_studioz_pipeline(
             for note in exec_review.required_script_notes:
                 print(f"  - {note}")
             logger.info("Pipeline stopped at greenlight gate (not approved).")
+            print(ledger.summary())
             return treatment, exec_review, None
 
         if not exec_review.greenlight and force:
@@ -198,6 +322,9 @@ async def run_studioz_pipeline(
         beats = get_storyboard_plan(treatment.estimated_runtime_minutes)
         logger.info("Storyboard plan: {} frames, beats={}", len(beats), beats)
         storyboard, image_style = await agent_director(treatment, exec_review, director_persona, beats=beats)
+
+        # Upstream validation: rewrite prompts that contain color language (stick_figure only)
+        storyboard = await validate_and_rewrite_prompts(storyboard, image_style)
 
         print("\nRunning Image Generation for Storyboard Frames...")
         storyboard = await generate_storyboard_images(storyboard, image_style=image_style)
@@ -235,10 +362,13 @@ async def run_studioz_pipeline(
 
         logger.info("Pipeline completed successfully.")
 
+        print(ledger.summary())
+
         return treatment, exec_review, storyboard
 
     except Exception as e:
         logger.error(f"Pipeline failed: {e}")
+        print(ledger.summary())
 
 
 if __name__ == "__main__":

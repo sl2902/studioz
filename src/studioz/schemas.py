@@ -102,3 +102,8 @@ class NarrationSegment(BaseModel):
 class NarrationScript(BaseModel):
     title: str = Field(description="Film/storyboard title this narration belongs to")
     segments: list[NarrationSegment] = Field(description="Narration segments, one per frame, in frame order")
+
+
+class FrameInspectionResult(BaseModel):
+    passed: bool = Field(description="Whether the generated image matches its intended content and constraints")
+    issues: list[str] = Field(default_factory=list, description="Specific problems found, empty if passed=True")

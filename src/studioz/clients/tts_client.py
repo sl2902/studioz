@@ -1,3 +1,4 @@
+import time
 import wave
 from pathlib import Path
 
@@ -5,6 +6,7 @@ from google.genai import types
 from loguru import logger
 
 from studioz.clients.vertex_client import client
+from studioz.ledger import ledger, LedgerEntry, estimate_tts_cost
 from studioz.schemas import NarrationSegment
 
 # Gemini TTS model with audio tag support.
@@ -171,6 +173,7 @@ async def generate_narration_audio(
     succeeded = 0
 
     for i, seg in enumerate(segments):
+        t0 = time.perf_counter()
         if seg.dialogue and seg.dialogue.character_name in voice_map:
             # Multi-speaker: Narrator + character
             character_voice = voice_map[seg.dialogue.character_name]
@@ -185,10 +188,30 @@ async def generate_narration_audio(
             logger.info("TTS frame {}: Narrator only", seg.frame_number)
             pcm = await _generate_single_speaker_pcm(seg.narrator_text)
 
+        latency = time.perf_counter() - t0
         if pcm is not None:
             all_pcm.extend(pcm)
             succeeded += 1
+            # Estimate tokens based on text length (rough: 1 token ≈ 4 chars)
+            input_text = seg.narrator_text + (seg.dialogue.line if seg.dialogue else "")
+            estimated_input_tokens = len(input_text) // 4
+            estimated_output_tokens = len(pcm) // 2  # 16-bit samples
+            cost = estimate_tts_cost(estimated_input_tokens, estimated_output_tokens)
+            ledger.record(LedgerEntry(
+                step_name=f"tts_frame_{seg.frame_number}",
+                latency_seconds=latency,
+                estimated_cost_usd=cost,
+                model="gemini-3.1-flash-tts-preview",
+                success=True,
+            ))
         else:
+            ledger.record(LedgerEntry(
+                step_name=f"tts_frame_{seg.frame_number}",
+                latency_seconds=latency,
+                estimated_cost_usd=0.0,
+                model="gemini-3.1-flash-tts-preview",
+                success=False,
+            ))
             logger.warning("TTS frame {} failed — gap in audio", seg.frame_number)
 
     if succeeded == 0:

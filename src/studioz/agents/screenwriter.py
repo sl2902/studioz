@@ -1,7 +1,10 @@
+import time
+
 from loguru import logger
 from google.genai import types
 from studioz.clients.vertex_client import client
 from studioz.config import settings
+from studioz.ledger import ledger, LedgerEntry, estimate_text_cost
 from studioz.prompts import get_persona
 from studioz.schemas import PitchBrief, ScriptTreatment
 
@@ -28,6 +31,7 @@ async def agent_screenwriter(brief: PitchBrief, persona_key: str = "blockbuster"
     )
     
     try:
+        t0 = time.perf_counter()
         response = await client.aio.models.generate_content(
             model=settings.model_pro,
             contents=prompt,
@@ -41,6 +45,20 @@ async def agent_screenwriter(brief: PitchBrief, persona_key: str = "blockbuster"
 
         script_treatment: ScriptTreatment = response.parsed
 
+        latency = time.perf_counter() - t0
+        usage = getattr(response, 'usage_metadata', None)
+        input_tokens = getattr(usage, 'prompt_token_count', 0) if usage else 0
+        output_tokens = getattr(usage, 'candidates_token_count', 0) if usage else 0
+        cost = estimate_text_cost(settings.model_pro, input_tokens, output_tokens)
+        ledger.record(LedgerEntry(
+            step_name="screenwriter",
+            latency_seconds=latency,
+            estimated_cost_usd=cost,
+            model=settings.model_pro,
+            success=True,
+        ))
+        logger.info("screenwriter completed in {:.1f}s (est. ${:.4f})", latency, cost)
+
         logger.success(
             "Successfully generated Script Treatment. Title: {}, Genre: {}",
             script_treatment.title,
@@ -49,5 +67,13 @@ async def agent_screenwriter(brief: PitchBrief, persona_key: str = "blockbuster"
         return script_treatment
     
     except Exception as e:
+        latency = time.perf_counter() - t0
+        ledger.record(LedgerEntry(
+            step_name="screenwriter",
+            latency_seconds=latency,
+            estimated_cost_usd=0.0,
+            model=settings.model_pro,
+            success=False,
+        ))
         logger.exception(f"Failed to generate structured script treatment: {e}")
         raise

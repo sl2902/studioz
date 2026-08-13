@@ -1,9 +1,12 @@
 import os
+import time
+
 from loguru import logger
 import asyncio
 from pydantic import BaseModel, Field
 from parallel import AsyncParallel
 from studioz.config import settings
+from studioz.ledger import ledger, LedgerEntry
 
 # Trusted domain lists
 BUDGET_COMPS_DOMAINS = ["boxofficemojo.com", "the-numbers.com", "variety.com", "hollywoodreporter.com"]
@@ -182,6 +185,7 @@ async def _fetch_single_domain_search(client: AsyncParallel, query: str, domain_
 
 async def fetch_parallel_grounding(treatment) -> ParallelGroundingResults:
     """Runs Parallel Search API calls concurrently across all three committee domains."""
+    t0 = time.perf_counter()
     api_key = settings.parallel_web_api_key
     client = AsyncParallel(api_key=api_key) if api_key else AsyncParallel()
 
@@ -194,6 +198,15 @@ async def fetch_parallel_grounding(treatment) -> ParallelGroundingResults:
         _fetch_single_domain_search(client, q_market, "market_trends"),
         _fetch_single_domain_search(client, q_ip, "ip_clearance")
     )
+
+    latency = time.perf_counter() - t0
+    ledger.record(LedgerEntry(
+        step_name="parallel_search",
+        latency_seconds=latency,
+        estimated_cost_usd=0.0,
+        model="parallel_search_api",
+        success=True,
+    ))
 
     return ParallelGroundingResults(
         budget_comps=budget_res,

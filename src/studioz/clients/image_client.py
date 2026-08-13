@@ -1,5 +1,6 @@
 import asyncio
 import random
+import time
 from pathlib import Path
 
 from google import genai
@@ -7,6 +8,7 @@ from google.genai import types
 from loguru import logger
 
 from studioz.config import settings
+from studioz.ledger import ledger, LedgerEntry, estimate_image_cost
 
 # Gemini 3 Pro Image ("Nano Banana Pro") — premium image model with improved
 # instruction-following, legible text rendering, and character consistency.
@@ -76,6 +78,7 @@ async def generate_frame_image(imagen_prompt: str, output_path: str, style: str 
     # Ensure output directory exists
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
+    t0 = time.perf_counter()
     for attempt in range(_MAX_RETRIES):
         try:
             response = await _image_client.aio.models.generate_content(
@@ -122,6 +125,15 @@ async def generate_frame_image(imagen_prompt: str, output_path: str, style: str 
             # Write raw image bytes to disk
             Path(output_path).write_bytes(image_bytes)
             logger.success("Image saved: {}", output_path)
+            latency = time.perf_counter() - t0
+            cost = estimate_image_cost()
+            ledger.record(LedgerEntry(
+                step_name=f"image_{Path(output_path).stem}",
+                latency_seconds=latency,
+                estimated_cost_usd=cost,
+                model="gemini-3-pro-image",
+                success=True,
+            ))
             return output_path
 
         except Exception as e:

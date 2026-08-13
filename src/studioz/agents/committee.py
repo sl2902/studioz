@@ -1,7 +1,10 @@
+import time
+
 from loguru import logger
 from google.genai import types
 from studioz.clients.vertex_client import client
 from studioz.config import settings
+from studioz.ledger import ledger, LedgerEntry, estimate_text_cost
 from studioz.prompts import get_persona
 from studioz.schemas import MemberReview, ScriptTreatment
 
@@ -33,6 +36,7 @@ async def agent_committee_member(
     if budget_framing:
         prompt += f"\n\n{budget_framing}"
 
+    t0 = time.perf_counter()
     response = await client.aio.models.generate_content(
         model=settings.model_pro,
         contents=prompt,
@@ -45,6 +49,19 @@ async def agent_committee_member(
     )
 
     review: MemberReview = response.parsed
+    latency = time.perf_counter() - t0
+    usage = getattr(response, 'usage_metadata', None)
+    input_tokens = getattr(usage, 'prompt_token_count', 0) if usage else 0
+    output_tokens = getattr(usage, 'candidates_token_count', 0) if usage else 0
+    cost = estimate_text_cost(settings.model_pro, input_tokens, output_tokens)
+    ledger.record(LedgerEntry(
+        step_name=f"committee_{persona_key}",
+        latency_seconds=latency,
+        estimated_cost_usd=cost,
+        model=settings.model_pro,
+        success=True,
+    ))
+    logger.info("committee_{} completed in {:.1f}s (est. ${:.4f})", persona_key, latency, cost)
     logger.success(
         "Committee Member '{}' completed review with stance: '{}'",
         persona["name"],
