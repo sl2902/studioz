@@ -10,14 +10,20 @@ async def agent_director(
         review: ExecutiveReview,
         persona_key: str = "high_octane",
         beats: list[str] | None = None,
-    ) -> Storyboard:
-    """Receives treatment + notes and designs visual storyboard"""
+    ) -> tuple[Storyboard, str]:
+    """Receives treatment + notes and designs visual storyboard.
+    
+    Returns:
+        A tuple of (Storyboard, image_style) where image_style is read from
+        the selected persona's config (e.g. "cinematic", "stick_figure").
+    """
     if beats is None:
         beats = ["Beginning", "Turning Point", "Ending"]
 
     num_frames = len(beats)
     persona = get_persona("director", persona_key)
-    logger.info("Director Agent active: '{}'", persona["name"])
+    image_style = persona.get("image_style", "cinematic")
+    logger.info("Director Agent active: '{}' (image_style={})", persona["name"], image_style)
     logger.info("Generating {}-frame storyboard via Structured Output", num_frames)
 
     # Build the beat assignment text for the prompt
@@ -53,6 +59,11 @@ async def agent_director(
     - NEVER include your persona name or any director/cinematographer name as
       literal text in the imagen_prompt. The image model will render names as
       on-screen text captions if included.
+    - NEVER include character names in the imagen_prompt — not in parentheses,
+      not as labels, not as identifiers. Do NOT write things like "(REMI)" or
+      "(B.A.R.R.Y.)" — describe figures only by their visual attributes (e.g.
+      "a stick figure with a quill icon above its head"). Any text-like content
+      in the prompt will be rendered as visible on-screen text by the image model.
     - Do NOT include any text overlays, captions, titles, HUD elements, logos,
       or watermarks in your image descriptions.
     - Each imagen_prompt should describe a pure visual scene — what the camera
@@ -89,7 +100,7 @@ async def agent_director(
             "Successfully generated Storyboard with {} frames", 
             len(storyboard.frames),
         )
-        return storyboard
+        return storyboard, image_style
 
     except Exception as e:
         logger.exception(f"Failed to generate structured storyboard")

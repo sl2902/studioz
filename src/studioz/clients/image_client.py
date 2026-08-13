@@ -2,16 +2,38 @@ import asyncio
 import random
 from pathlib import Path
 
+from google import genai
 from google.genai import types
 from loguru import logger
 
-from studioz.clients.vertex_client import client
+from studioz.config import settings
 
-IMAGE_MODEL = "gemini-2.5-flash-image"
+# Gemini 3 Pro Image ("Nano Banana Pro") — premium image model with improved
+# instruction-following, legible text rendering, and character consistency.
+# Requires location='global' (not available in us-central1).
+IMAGE_MODEL = "gemini-3-pro-image"
+
+# Separate client for image generation (global endpoint required for Gemini 3 image models)
+_image_client = genai.Client(
+    vertexai=True,
+    project=settings.gcp_project,
+    location="global",
+)
 
 # Fixed suffix appended to every image prompt to prevent the model from
 # rendering unwanted text, captions, logos, or UI overlays into the image.
-_NO_TEXT_SUFFIX = " Render as a pure photograph with no text or graphics overlaid."
+_NO_TEXT_SUFFIX = " No on-screen text, no captions, no logos, no watermarks."
+
+# Style suffixes — applied before _NO_TEXT_SUFFIX
+_STYLE_SUFFIXES = {
+    "cinematic": " Render as a pure photograph with cinematic lighting and composition.",
+    "stick_figure": (
+        " Draw in xkcd-style stick figures: extremely minimal, thin single-line"
+        " limbs and torso, simple circle heads, plain white background."
+        " No rounded bodies, no filled shapes, no vector icons, no photorealism,"
+        " no color, no shading, no gradients — pure thin-line whiteboard doodle."
+    ),
+}
 
 # Retry config for 429 rate limiting
 _MAX_RETRIES = 5
@@ -25,17 +47,26 @@ def _is_rate_limit_error(error: Exception) -> bool:
     return "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
 
 
-async def generate_frame_image(imagen_prompt: str, output_path: str) -> str | None:
+async def generate_frame_image(imagen_prompt: str, output_path: str, style: str = "cinematic") -> str | None:
     """
-    Generates an image for the given prompt via Vertex AI (gemini-2.5-flash-image),
+    Generates an image for the given prompt via Vertex AI (gemini-3-pro-image),
     saves it to output_path, and returns the path.
 
     Uses image_config with aspect_ratio="16:9" for proper cinematic framing.
     Retries with exponential backoff on 429 rate limit errors.
 
+    Args:
+        imagen_prompt: The base image generation prompt.
+        output_path: Where to save the generated image.
+        style: Visual style to apply — "cinematic" (default) or "stick_figure".
+
     Returns None (instead of raising) if generation fails for any reason
     (quota exhausted after retries, content filter, network error, etc.).
     """
+    # Build the full prompt: base + style suffix + no-text constraint
+    style_suffix = _STYLE_SUFFIXES.get(style, _STYLE_SUFFIXES["cinematic"])
+    full_prompt = imagen_prompt + style_suffix + _NO_TEXT_SUFFIX
+
     logger.info(
         "Generating image for prompt: '{}...' -> {}",
         imagen_prompt[:60],
@@ -47,9 +78,9 @@ async def generate_frame_image(imagen_prompt: str, output_path: str) -> str | No
 
     for attempt in range(_MAX_RETRIES):
         try:
-            response = await client.aio.models.generate_content(
+            response = await _image_client.aio.models.generate_content(
                 model=IMAGE_MODEL,
-                contents=imagen_prompt + _NO_TEXT_SUFFIX,
+                contents=full_prompt,
                 config=types.GenerateContentConfig(
                     response_modalities=["IMAGE"],
                     image_config=types.ImageConfig(aspect_ratio="16:9"),

@@ -52,7 +52,7 @@ def get_storyboard_plan(runtime_minutes: int) -> list[str]:
         return ["Setup", "Inciting Incident", "Midpoint", "Dark Night of the Soul", "Climax", "Resolution"]
 
 
-async def generate_storyboard_images(storyboard: Storyboard) -> Storyboard:
+async def generate_storyboard_images(storyboard: Storyboard, image_style: str = "cinematic") -> Storyboard:
     """Generate images for all storyboard frames sequentially. Backoff/retry for 429s is handled in the client."""
     safe_title = _safe_title(storyboard.title)
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -64,7 +64,7 @@ async def generate_storyboard_images(storyboard: Storyboard) -> Storyboard:
         logger.info(
             "Starting image generation for frame {} ...", frame.frame_number
         )
-        result = await generate_frame_image(frame.imagen_prompt, output_path)
+        result = await generate_frame_image(frame.imagen_prompt, output_path, style=image_style)
         if result:
             logger.success(
                 "Frame {} image saved: {}", frame.frame_number, result
@@ -197,10 +197,10 @@ async def run_studioz_pipeline(
         print("Running Director Agent...")
         beats = get_storyboard_plan(treatment.estimated_runtime_minutes)
         logger.info("Storyboard plan: {} frames, beats={}", len(beats), beats)
-        storyboard = await agent_director(treatment, exec_review, director_persona, beats=beats)
+        storyboard, image_style = await agent_director(treatment, exec_review, director_persona, beats=beats)
 
         print("\nRunning Image Generation for Storyboard Frames...")
-        storyboard = await generate_storyboard_images(storyboard)
+        storyboard = await generate_storyboard_images(storyboard, image_style=image_style)
 
         # Persist storyboard as JSON alongside the frame images
         safe_title = _safe_title(storyboard.title)
@@ -267,7 +267,7 @@ if __name__ == "__main__":
         "--director-persona",
         type=str,
         default="high_octane",
-        choices = ["high_octane", "cinematic_noir"],
+        choices = ["high_octane", "cinematic_noir", "explainer"],
         help="Persona key for the director agent"
     )
     parse_args.add_argument(
