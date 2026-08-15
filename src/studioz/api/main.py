@@ -48,7 +48,7 @@ from studioz.config import settings
 app = FastAPI(title="StudioZ API", version="0.1.0")
 
 # CORS — allow configured frontend origin + localhost for dev
-_allowed_origins = ["http://localhost:5173", "http://localhost:3000"]
+_allowed_origins = ["http://localhost:5173", "http://localhost:3000", "https://studioz-seven.vercel.app"]
 if settings.frontend_origin:
     _allowed_origins.append(settings.frontend_origin)
 
