@@ -29,7 +29,7 @@ ScreenwriterPersona = Literal[_SCREENWRITER_KEYS]  # type: ignore[valid-type]
 DirectorPersona = Literal[_DIRECTOR_KEYS]  # type: ignore[valid-type]
 
 
-# Request-level cache: maps deterministic request hash → completed job_id
+# Request-level cache: maps deterministic request hash -> completed job_id
 REQUEST_CACHE: dict[str, str] = {}
 
 
@@ -108,9 +108,7 @@ def _storyboard_to_dict(storyboard: Storyboard) -> dict:
     return data
 
 
-# ============================================================
 # Request models (persona fields use dynamic Literal for auto-validation)
-# ============================================================
 
 class PitchRequest(BaseModel):
     pitch: str = Field(min_length=10, description="The film pitch/premise (at least 10 characters)")
@@ -126,9 +124,7 @@ class RegenerateStoryboardRequest(BaseModel):
     director_persona: DirectorPersona  # type: ignore[valid-type]
 
 
-# ============================================================
 # Background task runners
-# ============================================================
 
 async def _run_pitch_pipeline(job_id: str, request: PitchRequest):
     """Run the full pipeline as a background task."""
@@ -302,9 +298,7 @@ async def _run_regenerate_storyboard(
         job.error = str(e)
 
 
-# ============================================================
 # Endpoints
-# ============================================================
 
 class PersonaOption(BaseModel):
     key: str
