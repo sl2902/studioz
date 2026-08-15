@@ -136,7 +136,3 @@ uv run python -m studioz.generate_demo_audio
 ```
 
 ---
-
-## License
-
-[Add your chosen OSS license here — required for hackathon submission, must be detectable in the repo's About section.]
