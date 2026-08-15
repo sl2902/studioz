@@ -20,6 +20,28 @@ class Ledger:
     def record(self, entry: LedgerEntry) -> None:
         self._entries.append(entry)
 
+    def to_dict_list(self) -> list[dict]:
+        """Return entries as a list of dicts for JSON serialization."""
+        return [
+            {
+                "step_name": e.step_name,
+                "model": e.model,
+                "latency_seconds": round(e.latency_seconds, 1),
+                "estimated_cost_usd": round(e.estimated_cost_usd, 4),
+                "success": e.success,
+            }
+            for e in self._entries
+        ]
+
+    def totals(self) -> dict:
+        """Return total latency and cost."""
+        total_latency = sum(e.latency_seconds for e in self._entries)
+        total_cost = sum(e.estimated_cost_usd for e in self._entries)
+        return {
+            "total_latency_seconds": round(total_latency, 1),
+            "total_cost_usd": round(total_cost, 4),
+        }
+
     def summary(self) -> str:
         if not self._entries:
             return "[Ledger] No entries recorded."

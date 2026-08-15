@@ -52,6 +52,13 @@ async def agent_narrator(storyboard: Storyboard) -> NarrationScript:
     - Never place two tags adjacent without text between them.
     - The narration should flow naturally from frame to frame as if
       reading a movie aloud to an audience.
+    - GREENLIGHT TERMINOLOGY: If the story involves a fictional pitch being
+      approved/rejected within its own plot, avoid using the exact words
+      "greenlit", "greenlight", or "the committee approved" — these are
+      real-world StudioZ system terms that could be confused with the
+      actual committee's real verdict. Instead use alternatives like
+      "the idea moved forward", "found its way to production",
+      "was given the go-ahead", etc.
     """
 
     frames_text = "\n".join(

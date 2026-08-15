@@ -20,6 +20,10 @@ class Job(BaseModel):
     error: str | None = None
     current_stage: str | None = None
     regenerated_from: str | None = None
+    # Video rendering state (tracked on the parent job)
+    video_job_id: str | None = None
+    video_url: str | None = None
+    video_status: JobStatus | None = None
 
 
 # In-memory job store

@@ -49,6 +49,14 @@ class StoryboardFrame(BaseModel):
     image_path: str | None = Field(
         default=None, description="Local filesystem path to the generated frame image, if generated"
     )
+    inspection_passed: bool = Field(
+        default=True,
+        description="Whether the frame's final kept version passed inspection (False if it shipped after exhausting retries)"
+    )
+    inspection_issues: list[str] | None = Field(
+        default=None,
+        description="The specific issues from the last failed inspection, if inspection_passed is False"
+    )
 
 class Storyboard(BaseModel):
     title: str = Field(description="Film title this storyboard belongs to")

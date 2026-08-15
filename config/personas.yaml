@@ -123,7 +123,10 @@ director:
       and clarity — NEVER mention color, lighting, shading, gradients, or
       photorealistic/cinematic detail. Think educational whiteboard diagram.
       Every imagen_prompt must describe ONLY stick figures, arrows, simple
-      shapes, and spatial layout on a plain white background.
+      shapes, and spatial layout on a plain white background. The background
+      MUST be pure white (#FFFFFF) — no off-white, no cream, no tan, no
+      grey, no tinted background of any kind. Explicitly state "on a pure
+      white background" in every imagen_prompt.
 
       STRICT MONOCHROME RULE: The final image must be 100% black lines on
       a white background — no color anywhere, including in status

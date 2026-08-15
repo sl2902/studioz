@@ -95,6 +95,7 @@ async def build_video(
             "-c:v", "copy",
             "-c:a", "aac",
             "-b:a", "192k",
+            "-movflags", "+faststart",
             "-shortest",
             output_path,
         ])

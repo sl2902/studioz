@@ -68,6 +68,41 @@ async def _rewrite_prompt_remove_color(imagen_prompt: str) -> str:
         return _BANNED_COLOR_PATTERN.sub("black", imagen_prompt)
 
 
+async def _rewrite_prompt_for_issues(
+    imagen_prompt: str, issues: list[str], style_constraints: str
+) -> str:
+    """
+    Rewrite an image prompt to fix specific issues identified by the inspector.
+    Uses a cheap text model to incorporate feedback without losing the original intent.
+    """
+    issues_text = "\n".join(f"- {issue}" for issue in issues)
+    rewrite_instruction = (
+        "You are fixing an image generation prompt that produced a flawed image. "
+        "The following issues were found by an automated inspector:\n\n"
+        f"{issues_text}\n\n"
+        f"Style constraints that MUST be respected:\n{style_constraints}\n\n"
+        "Rewrite the prompt below to avoid ALL of the listed issues while preserving "
+        "the same scene content and composition. Be specific about what to change — "
+        "for example, if text was found, remove any description of text/labels/documents. "
+        "If the background was wrong, explicitly state 'on a pure white background'. "
+        "Return ONLY the rewritten prompt, nothing else."
+    )
+    try:
+        response = await client.aio.models.generate_content(
+            model=settings.model_fast,
+            contents=f"{rewrite_instruction}\n\nOriginal prompt:\n{imagen_prompt}",
+            config=types.GenerateContentConfig(temperature=0.1),
+        )
+        rewritten = response.text.strip()
+        if not rewritten or len(rewritten) < 20:
+            logger.warning("Issue-based rewrite too short, keeping original prompt")
+            return imagen_prompt
+        return rewritten
+    except Exception as e:
+        logger.warning("Issue-based prompt rewrite failed ({}), keeping original", e)
+        return imagen_prompt
+
+
 async def validate_and_rewrite_prompts(storyboard: Storyboard, image_style: str) -> Storyboard:
     """
     Upstream validation: for stick_figure-style frames, check each imagen_prompt
@@ -141,14 +176,29 @@ def get_storyboard_plan(runtime_minutes: int) -> list[str]:
         return ["Setup", "Inciting Incident", "Midpoint", "Dark Night of the Soul", "Climax", "Resolution"]
 
 
-async def generate_storyboard_images(storyboard: Storyboard, image_style: str = "cinematic") -> Storyboard:
+async def generate_storyboard_images(storyboard: Storyboard, image_style: str = "cinematic", on_stage: callable = None, job_id: str | None = None) -> Storyboard:
     """Generate images for all storyboard frames sequentially. Backoff/retry for 429s is handled in the client."""
     safe_title = _safe_title(storyboard.title)
-    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    # Use job_id-scoped directory to prevent filename collisions across runs
+    if job_id:
+        output_dir = Path("outputs/storyboard") / job_id
+    else:
+        output_dir = Path("outputs/storyboard")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    total_frames = len(storyboard.frames)
+
+    def _img_stage(msg: str):
+        if on_stage:
+            on_stage(msg)
 
     # Build style constraints string based on image_style
     if image_style == "stick_figure":
-        style_constraints = "Zero legible text of any kind. Black and white only — no color. Stick-figure line art style — no photorealism."
+        style_constraints = (
+            "Zero legible text of any kind. Black and white only — no color. "
+            "Stick-figure line art style — no photorealism. "
+            "Background MUST be pure white — no cream, tan, grey, or any tinted background. "
+            "If the background is anything other than clean white, that is a violation."
+        )
     else:
         style_constraints = "No on-screen text, captions, logos, or watermarks. Cinematic photorealistic style."
 
@@ -157,7 +207,8 @@ async def generate_storyboard_images(storyboard: Storyboard, image_style: str = 
     results = []
     for frame in storyboard.frames:
         filename = f"{safe_title}_frame_{frame.frame_number:02d}.png"
-        output_path = str(OUTPUTS_DIR / filename)
+        output_path = str(output_dir / filename)
+        _img_stage(f"image_generation:generating:{frame.frame_number}/{total_frames}")
         logger.info(
             "Starting image generation for frame {} ...", frame.frame_number
         )
@@ -166,18 +217,21 @@ async def generate_storyboard_images(storyboard: Storyboard, image_style: str = 
             logger.success(
                 "Frame {} image saved: {}", frame.frame_number, result
             )
-            # Inspection loop
+            # Inspection loop with adaptive prompt rewriting
+            current_prompt = frame.imagen_prompt
             for inspection_attempt in range(MAX_INSPECTION_RETRIES + 1):
-                # Generate image (first time already done above, subsequent are retries)
+                # Generate image (first time already done above, subsequent are retries with fixed prompt)
                 if inspection_attempt > 0:
-                    logger.info("Regenerating frame {} (inspection retry {}/{})", frame.frame_number, inspection_attempt, MAX_INSPECTION_RETRIES)
-                    result = await generate_frame_image(frame.imagen_prompt, output_path, style=image_style)
+                    _img_stage(f"image_generation:retry:{frame.frame_number}/{total_frames}:{inspection_attempt}/{MAX_INSPECTION_RETRIES}")
+                    logger.info("Regenerating frame {} (inspection retry {}/{}) with corrected prompt", frame.frame_number, inspection_attempt, MAX_INSPECTION_RETRIES)
+                    result = await generate_frame_image(current_prompt, output_path, style=image_style)
                     if result is None:
                         break
 
                 # Inspect
+                _img_stage(f"image_generation:inspecting:{frame.frame_number}/{total_frames}")
                 t0_inspect = time.perf_counter()
-                inspection = await inspect_frame(result, frame.imagen_prompt, style_constraints)
+                inspection = await inspect_frame(result, current_prompt, style_constraints)
                 inspect_latency = time.perf_counter() - t0_inspect
                 ledger.record(LedgerEntry(
                     step_name=f"inspect_frame_{frame.frame_number}",
@@ -188,8 +242,34 @@ async def generate_storyboard_images(storyboard: Storyboard, image_style: str = 
                 ))
 
                 if inspection.passed:
+                    _img_stage(f"image_generation:passed:{frame.frame_number}/{total_frames}")
+                    frame.inspection_passed = True
+                    frame.inspection_issues = None
                     break
-                elif inspection_attempt == MAX_INSPECTION_RETRIES:
+                elif inspection_attempt < MAX_INSPECTION_RETRIES:
+                    # Rewrite the prompt to address the specific issues found
+                    issues_text = "; ".join(inspection.issues)
+                    logger.info(
+                        "Frame {} failed inspection — rewriting prompt to fix: {}",
+                        frame.frame_number, issues_text,
+                    )
+                    t0_rewrite = time.perf_counter()
+                    current_prompt = await _rewrite_prompt_for_issues(
+                        current_prompt, inspection.issues, style_constraints
+                    )
+                    rewrite_latency = time.perf_counter() - t0_rewrite
+                    ledger.record(LedgerEntry(
+                        step_name=f"fix_prompt_frame_{frame.frame_number}",
+                        latency_seconds=rewrite_latency,
+                        estimated_cost_usd=estimate_text_cost(settings.model_fast, 600, 600),
+                        model=settings.model_fast,
+                        success=True,
+                    ))
+                    logger.debug("Rewritten prompt: {}", current_prompt)
+                else:
+                    _img_stage(f"image_generation:failed:{frame.frame_number}/{total_frames}")
+                    frame.inspection_passed = False
+                    frame.inspection_issues = inspection.issues
                     logger.warning("Frame {} failed inspection after {} retries — keeping last version. Issues: {}", frame.frame_number, MAX_INSPECTION_RETRIES, inspection.issues)
         else:
             logger.warning(
@@ -216,19 +296,28 @@ async def run_studioz_pipeline(
         director_persona: str,
         force: bool = False,
         render_video: bool = False,
+        on_stage: callable = None,
+        job_id: str | None = None,
     ) -> tuple:
     """Runs the full StudioZ pipeline from pitch to storyboard"""
     logger.info("Starting StudioZ pipeline for pitch: {}...", brief.pitch[:50])
     ledger._entries = []
 
+    def _stage(name: str):
+        if on_stage:
+            on_stage(name)
+
     try:
+        _stage("screenwriter")
         print("Running Screenwriter Agent...")
         treatment = await agent_screenwriter(brief, screen_writer_persona)
         treatment = enforce_runtime_target(treatment, brief)
 
+        _stage("grounding")
         print("Fetching Parallel Search grounding data...")
         grounding, citations = await fetch_parallel_grounding(treatment)
 
+        _stage("committee")
         print("\nRunning Committee Review CONCURRENTLY...")
         # Build runtime-aware budget framing for the CFO
         cfo_budget_framing = (
@@ -248,25 +337,28 @@ async def run_studioz_pipeline(
             "runtime within the short-film range, not just whether it clears the feature-length threshold."
         )
 
+        # Run committee members concurrently, reporting per-member completion
+        async def _run_member(persona_key, **kwargs):
+            result = await agent_committee_member(treatment, persona_key, **kwargs)
+            _stage(f"committee:{persona_key}_done")
+            return result
+
         cfo_review, creative_review, legal_review = await asyncio.gather(
-            agent_committee_member(
-                treatment, 
-                "cfo", 
-                agent_config_key="committee_member", 
+            _run_member(
+                "cfo",
+                agent_config_key="committee_member",
                 grounding_context=grounding.budget_comps,
                 budget_framing=cfo_budget_framing,
             ),
-            agent_committee_member(
-                treatment, 
-                "creative_exec", 
-                agent_config_key="committee_member", 
-                grounding_context=grounding.market_trends
+            _run_member(
+                "creative_exec",
+                agent_config_key="committee_member",
+                grounding_context=grounding.market_trends,
             ),
-            agent_committee_member(
-                treatment, 
-                "legal_counsel", 
-                agent_config_key="committee_member", 
-                grounding_context=grounding.ip_clearance
+            _run_member(
+                "legal_counsel",
+                agent_config_key="committee_member",
+                grounding_context=grounding.ip_clearance,
             ),
         )
 
@@ -278,6 +370,7 @@ async def run_studioz_pipeline(
             for pt in rev.key_points:
                 print(f" - {pt}")
 
+        _stage("consensus")
         print("\nRunning Consensus Agent...")
         consensus_runtime_context = (
             f"NOTE: This is a {brief.film_type} film with an estimated runtime of "
@@ -294,6 +387,7 @@ async def run_studioz_pipeline(
         print(f"\n[Executive Consensus] Greenlight: {exec_review.greenlight}")
         print(f"Summary: {exec_review.summary}")
 
+        _stage("gate")
         # Greenlight gate: skip director/image generation if not approved
         if not exec_review.greenlight and not force:
             print("\n--- PROJECT NOT GREENLIT ---")
@@ -318,6 +412,7 @@ async def run_studioz_pipeline(
                 "storyboard generation due to --force override."
             )
 
+        _stage("director")
         print("Running Director Agent...")
         beats = get_storyboard_plan(treatment.estimated_runtime_minutes)
         logger.info("Storyboard plan: {} frames, beats={}", len(beats), beats)
@@ -326,12 +421,18 @@ async def run_studioz_pipeline(
         # Upstream validation: rewrite prompts that contain color language (stick_figure only)
         storyboard = await validate_and_rewrite_prompts(storyboard, image_style)
 
+        _stage("image_generation")
         print("\nRunning Image Generation for Storyboard Frames...")
-        storyboard = await generate_storyboard_images(storyboard, image_style=image_style)
+        storyboard = await generate_storyboard_images(storyboard, image_style=image_style, on_stage=on_stage, job_id=job_id)
 
         # Persist storyboard as JSON alongside the frame images
         safe_title = _safe_title(storyboard.title)
-        storyboard_json_path = OUTPUTS_DIR / f"{safe_title}_storyboard.json"
+        if job_id:
+            storyboard_dir = Path("outputs/storyboard") / job_id
+        else:
+            storyboard_dir = OUTPUTS_DIR
+        storyboard_dir.mkdir(parents=True, exist_ok=True)
+        storyboard_json_path = storyboard_dir / f"{safe_title}_storyboard.json"
         storyboard_json_path.write_text(storyboard.model_dump_json(indent=2))
         logger.success("Storyboard saved: {}", storyboard_json_path)
         print(f"[Storyboard JSON] Saved to {storyboard_json_path}")
