@@ -5,6 +5,7 @@ from pathlib import Path
 from google.genai import types
 from loguru import logger
 
+from studioz.clients.storage import storage, is_gcs
 from studioz.clients.vertex_client import client
 from studioz.ledger import ledger, LedgerEntry, estimate_tts_cost
 from studioz.schemas import NarrationSegment
@@ -42,12 +43,28 @@ def _write_wav_file(
     rate: int = _PCM_SAMPLE_RATE,
     sample_width: int = _PCM_SAMPLE_WIDTH,
 ) -> None:
-    """Wrap raw PCM bytes in a proper WAV container."""
+    """Wrap raw PCM bytes in a proper WAV container (writes to local filesystem)."""
+    Path(filename).parent.mkdir(parents=True, exist_ok=True)
     with wave.open(filename, "wb") as wf:
         wf.setnchannels(channels)
         wf.setsampwidth(sample_width)
         wf.setframerate(rate)
         wf.writeframes(pcm_data)
+
+
+async def write_wav_to_storage(
+    pcm_data: bytes,
+    blob_path: str,
+    channels: int = _PCM_CHANNELS,
+    rate: int = _PCM_SAMPLE_RATE,
+    sample_width: int = _PCM_SAMPLE_WIDTH,
+) -> str:
+    """Write WAV to storage backend. Returns the local filesystem path."""
+    local_path = storage.local_path(blob_path)
+    _write_wav_file(local_path, pcm_data, channels, rate, sample_width)
+    if is_gcs():
+        await storage.upload_local_file(local_path, blob_path, "audio/wav")
+    return local_path
 
 
 def build_voice_map(segments: list[NarrationSegment]) -> dict[str, str]:
@@ -234,9 +251,17 @@ async def generate_narration_audio(
         logger.error("All TTS segments failed — no audio generated")
         return None, []
 
-    _write_wav_file(output_path, bytes(all_pcm))
+    # Determine blob_path (strip outputs/ prefix if present)
+    blob_path = output_path
+    if blob_path.startswith("outputs/"):
+        blob_path = blob_path[len("outputs/"):]
+
+    local_file = storage.local_path(blob_path)
+    _write_wav_file(local_file, bytes(all_pcm))
+    if is_gcs():
+        await storage.upload_local_file(local_file, blob_path, "audio/wav")
     logger.success(
         "Narration audio saved: {} ({}/{} frames, {} bytes PCM)",
-        output_path, succeeded, len(segments), len(all_pcm),
+        blob_path, succeeded, len(segments), len(all_pcm),
     )
-    return output_path, frame_timings
+    return local_file, frame_timings

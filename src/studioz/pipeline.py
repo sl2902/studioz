@@ -494,14 +494,17 @@ async def run_studioz_pipeline(
         # Persist storyboard as JSON alongside the frame images
         safe_title = _safe_title(storyboard.title)
         if job_id:
-            storyboard_dir = Path("outputs/storyboard") / job_id
+            storyboard_blob = f"storyboard/{job_id}/{safe_title}_storyboard.json"
         else:
-            storyboard_dir = OUTPUTS_DIR
-        storyboard_dir.mkdir(parents=True, exist_ok=True)
-        storyboard_json_path = storyboard_dir / f"{safe_title}_storyboard.json"
-        storyboard_json_path.write_text(storyboard.model_dump_json(indent=2))
-        logger.success("Storyboard saved: {}", storyboard_json_path)
-        print(f"[Storyboard JSON] Saved to {storyboard_json_path}")
+            storyboard_blob = f"storyboard/{safe_title}_storyboard.json"
+        from studioz.clients.storage import storage
+        await storage.save_file(
+            storyboard.model_dump_json(indent=2).encode(),
+            storyboard_blob,
+            "application/json",
+        )
+        logger.success("Storyboard saved: {}", storyboard_blob)
+        print(f"[Storyboard JSON] Saved to {storyboard_blob}")
 
         # Video rendering (opt-in via --render-video)
         if render_video:

@@ -6,19 +6,19 @@ Usage:
     python -m studioz.generate_demo_audio
 
 Generates:
-    outputs/_assets/explainer_voice/{step_id}.wav — one per explainer step
-    outputs/_assets/demo_walkthrough/{golden_job_id}.wav — one per golden demo
+    _assets/explainer_voice/{step_id}.wav — one per explainer step
+    _assets/demo_walkthrough/{golden_job_id}.wav — one per golden demo
 
 Reuses existing TTS client (Gemini 3.1 Flash TTS, single-speaker).
 """
 
 import asyncio
 import json
-import wave
 from pathlib import Path
 
 from loguru import logger
 
+from studioz.clients.storage import storage, is_gcs
 from studioz.clients.tts_client import _generate_single_speaker_pcm, _write_wav_file
 
 
@@ -79,18 +79,20 @@ DEMO_WALKTHROUGH_DIR = Path("outputs/_assets/demo_walkthrough")
 
 async def generate_explainer_audio():
     """Generate and cache narration for each explainer step."""
-    EXPLAINER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
     for step in EXPLAINER_STEPS:
-        wav_path = EXPLAINER_CACHE_DIR / f"{step['id']}.wav"
-        if wav_path.exists():
+        blob_path = f"_assets/explainer_voice/{step['id']}.wav"
+        if await storage.exists(blob_path):
             print(f"  ✓ {step['id']} (cached)")
             continue
 
         print(f"  Generating: {step['id']}...", end=" ", flush=True)
         pcm = await _generate_single_speaker_pcm(step["text"], step["voice"])
         if pcm:
-            _write_wav_file(str(wav_path), pcm)
+            # Write locally then upload
+            local_path = storage.local_path(blob_path)
+            _write_wav_file(local_path, pcm)
+            if is_gcs():
+                await storage.upload_local_file(local_path, blob_path, "audio/wav")
             duration = len(pcm) / (24000 * 2)
             print(f"done ({duration:.1f}s)")
         else:
@@ -100,28 +102,26 @@ async def generate_explainer_audio():
 
 async def generate_demo_walkthrough(golden_job_id: str | None = None):
     """Generate walkthrough narration for the golden demo result."""
-    DEMO_WALKTHROUGH_DIR.mkdir(parents=True, exist_ok=True)
-
     # Find the golden job_id
-    pointer_path = Path("demo_results/golden_job_id.txt")
     if golden_job_id is None:
-        if not pointer_path.exists():
+        pointer_data = await storage.read_file("_meta/golden_job_id.txt")
+        if pointer_data is None:
             print("  No golden demo set — skipping walkthrough generation.")
             return
-        golden_job_id = pointer_path.read_text().strip()
+        golden_job_id = pointer_data.decode().strip()
 
-    wav_path = DEMO_WALKTHROUGH_DIR / f"{golden_job_id}.wav"
-    if wav_path.exists():
+    blob_path = f"_assets/demo_walkthrough/{golden_job_id}.wav"
+    if await storage.exists(blob_path):
         print(f"  ✓ Demo walkthrough (cached for {golden_job_id[:8]})")
         return
 
     # Load the golden manifest
-    manifest_path = Path("outputs/jobs") / golden_job_id / "manifest.json"
-    if not manifest_path.exists():
+    manifest_data = await storage.read_file(f"jobs/{golden_job_id}/manifest.json")
+    if manifest_data is None:
         print(f"  Manifest not found for {golden_job_id[:8]} — skipping.")
         return
 
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_data)
 
     # Build walkthrough narration from real data
     treatment = manifest.get("treatment", {})
@@ -163,7 +163,10 @@ async def generate_demo_walkthrough(golden_job_id: str | None = None):
     print(f"  Generating walkthrough for '{title}'...", end=" ", flush=True)
     pcm = await _generate_single_speaker_pcm(walkthrough_text, "Kore")
     if pcm:
-        _write_wav_file(str(wav_path), pcm)
+        local_path = storage.local_path(blob_path)
+        _write_wav_file(local_path, pcm)
+        if is_gcs():
+            await storage.upload_local_file(local_path, blob_path, "audio/wav")
         duration = len(pcm) / (24000 * 2)
         print(f"done ({duration:.1f}s)")
     else:

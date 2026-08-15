@@ -4,6 +4,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from studioz.clients.storage import storage, is_gcs
+
 
 async def _run_ffmpeg(args: list[str]) -> bool:
     """Run an ffmpeg/ffprobe command, return True on success."""
@@ -59,7 +61,11 @@ async def build_video(
     """
     from studioz.clients.speech_bubble import generate_bubble_overlay
 
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    # Resolve output path via storage backend
+    blob_path = output_path
+    if blob_path.startswith("outputs/"):
+        blob_path = blob_path[len("outputs/"):]
+    local_output = storage.local_path(blob_path)
 
     # Generate bubble overlay (once, cached)
     bubble_path = generate_bubble_overlay()
@@ -151,12 +157,16 @@ async def build_video(
             "-b:a", "192k",
             "-movflags", "+faststart",
             "-shortest",
-            output_path,
+            local_output,
         ])
 
         if not success:
             logger.error("Failed to mux final video")
             return None
 
-        logger.success("Video assembled: {}", output_path)
+        # Upload to GCS if needed
+        if is_gcs():
+            await storage.upload_local_file(local_output, blob_path, "video/mp4")
+
+        logger.success("Video assembled: {}", blob_path)
         return output_path

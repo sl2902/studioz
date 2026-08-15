@@ -7,6 +7,7 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -40,21 +41,47 @@ def _compute_request_key(request: "PitchRequest") -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+from studioz.clients.storage import storage, is_gcs
+from studioz.config import settings
+
+
 app = FastAPI(title="StudioZ API", version="0.1.0")
 
-# CORS — permissive for dev
+# CORS — allow configured frontend origin + localhost for dev
+_allowed_origins = ["http://localhost:5173", "http://localhost:3000"]
+if settings.frontend_origin:
+    _allowed_origins.append(settings.frontend_origin)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins if settings.frontend_origin else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Static file serving for generated assets
-outputs_dir = Path("outputs")
-outputs_dir.mkdir(exist_ok=True)
-app.mount("/static", StaticFiles(directory=str(outputs_dir)), name="static")
+# Static file serving: local mode uses StaticFiles, GCS mode uses a proxy endpoint
+if not is_gcs():
+    outputs_dir = Path("outputs")
+    outputs_dir.mkdir(exist_ok=True)
+    app.mount("/static", StaticFiles(directory=str(outputs_dir)), name="static")
+else:
+    # GCS proxy: stream files from bucket on /static/{path}
+    @app.get("/static/{file_path:path}")
+    async def gcs_static_proxy(file_path: str):
+        """Proxy static file requests to GCS when running in cloud mode."""
+        data = await storage.read_file(file_path)
+        if data is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        # Infer content type from extension
+        ext = Path(file_path).suffix.lower()
+        content_types = {
+            ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".wav": "audio/wav", ".mp4": "video/mp4", ".json": "application/json",
+            ".txt": "text/plain",
+        }
+        content_type = content_types.get(ext, "application/octet-stream")
+        return Response(content=data, media_type=content_type)
 
 
 def _path_to_url(file_path: str | None) -> str | None:
@@ -66,38 +93,46 @@ def _path_to_url(file_path: str | None) -> str | None:
         relative = p.relative_to("outputs")
         return f"/static/{relative}"
     except ValueError:
-        return file_path
+        # Already a URL or relative path
+        if file_path.startswith("/static/"):
+            return file_path
+        return f"/static/{file_path}"
 
 
-MANIFESTS_DIR = Path("outputs/jobs")
-
-
-GOLDEN_POINTER_PATH = Path("demo_results/golden_job_id.txt")
-
-
-def _persist_job_manifest(job_id: str, result: dict) -> None:
-    """Auto-write a job's result to disk as a manifest for durability."""
-    manifest_dir = MANIFESTS_DIR / job_id
-    manifest_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = manifest_dir / "manifest.json"
-    # Write public-facing result (strip internal cache fields)
+async def _persist_job_manifest(job_id: str, result: dict) -> None:
+    """Auto-write a job's result to storage as a manifest for durability."""
     public_result = {k: v for k, v in result.items() if not k.startswith("_")}
-    manifest_path.write_text(json.dumps(public_result, indent=2, default=str))
-    logger.info("Job manifest persisted: {}", manifest_path)
+    manifest_data = json.dumps(public_result, indent=2, default=str).encode()
+    blob_path = f"jobs/{job_id}/manifest.json"
+    await storage.save_file(manifest_data, blob_path, "application/json")
+    logger.info("Job manifest persisted: {}", blob_path)
 
     # Bootstrap auto-golden: if no golden pointer exists yet, set this job as golden
-    if not GOLDEN_POINTER_PATH.exists():
-        GOLDEN_POINTER_PATH.parent.mkdir(exist_ok=True)
-        GOLDEN_POINTER_PATH.write_text(job_id)
+    if not await storage.exists("_meta/golden_job_id.txt"):
+        await storage.save_file(job_id.encode(), "_meta/golden_job_id.txt", "text/plain")
         logger.success("Bootstrap: auto-set golden demo pointer -> {} (first completed job)", job_id[:8])
 
 
-def _load_job_manifest(job_id: str) -> dict | None:
-    """Load a job manifest from disk (fallback when not in memory)."""
-    manifest_path = MANIFESTS_DIR / job_id / "manifest.json"
-    if manifest_path.exists():
-        return json.loads(manifest_path.read_text())
-    return None
+async def _load_job_manifest(job_id: str) -> dict | None:
+    """Load a job manifest from storage (fallback when not in memory)."""
+    blob_path = f"jobs/{job_id}/manifest.json"
+    data = await storage.read_file(blob_path)
+    if data is None:
+        return None
+    return json.loads(data)
+
+
+async def _read_golden_pointer() -> str | None:
+    """Read the golden demo job ID from storage."""
+    data = await storage.read_file("_meta/golden_job_id.txt")
+    if data is None:
+        return None
+    return data.decode().strip()
+
+
+async def _write_golden_pointer(job_id: str) -> None:
+    """Write the golden demo job ID to storage."""
+    await storage.save_file(job_id.encode(), "_meta/golden_job_id.txt", "text/plain")
 
 
 def _storyboard_to_dict(storyboard: Storyboard) -> dict:
@@ -180,7 +215,7 @@ async def _run_pitch_pipeline(job_id: str, request: PitchRequest):
         REQUEST_CACHE[request_key] = job_id
 
         # Auto-persist manifest to disk
-        _persist_job_manifest(job_id, job.result)
+        await _persist_job_manifest(job_id, job.result)
 
     except Exception as e:
         logger.exception("Pipeline failed for job {}", job_id)
@@ -222,7 +257,7 @@ async def _run_render_video(
             job.status = JobStatus.COMPLETED
             job.current_stage = "completed"
             job.result = {"video_url": video_url}
-            _persist_job_manifest(job_id, job.result)
+            await _persist_job_manifest(job_id, job.result)
             # Mirror to parent
             if parent_job:
                 parent_job.video_status = JobStatus.COMPLETED
@@ -230,7 +265,7 @@ async def _run_render_video(
                 # Re-persist parent manifest with video URL
                 if parent_job.result:
                     parent_job.result["video_url"] = video_url
-                    _persist_job_manifest(parent_job_id, parent_job.result)
+                    await _persist_job_manifest(parent_job_id, parent_job.result)
         else:
             job.status = JobStatus.FAILED
             job.error = "Video rendering returned None"
@@ -290,7 +325,7 @@ async def _run_regenerate_storyboard(
         }
 
         # Auto-persist manifest to disk
-        _persist_job_manifest(job_id, job.result)
+        await _persist_job_manifest(job_id, job.result)
 
     except Exception as e:
         logger.exception("Storyboard regeneration failed for job {}", job_id)
@@ -367,7 +402,7 @@ async def get_status(job_id: str):
         return response
 
     # Fallback: check for persisted manifest on disk
-    manifest = _load_job_manifest(job_id)
+    manifest = await _load_job_manifest(job_id)
     if manifest:
         return {
             "job_id": job_id,
@@ -478,19 +513,18 @@ async def regenerate_storyboard(job_id: str, request: RegenerateStoryboardReques
 async def set_golden_demo(job_id: str):
     """Set a job as the golden demo by writing a pointer file."""
     # Verify manifest exists (either in memory or on disk)
-    manifest = _load_job_manifest(job_id)
+    manifest = await _load_job_manifest(job_id)
     if not manifest:
         # Check if it's in memory and hasn't been persisted yet
         if job_id in JOBS and JOBS[job_id].status == JobStatus.COMPLETED and JOBS[job_id].result:
-            _persist_job_manifest(job_id, JOBS[job_id].result)
-            manifest = _load_job_manifest(job_id)
+            await _persist_job_manifest(job_id, JOBS[job_id].result)
+            manifest = await _load_job_manifest(job_id)
 
     if not manifest:
         raise HTTPException(status_code=404, detail=f"No manifest found for job '{job_id}'. Job must be completed first.")
 
     # Write the pointer
-    GOLDEN_POINTER_PATH.parent.mkdir(exist_ok=True)
-    GOLDEN_POINTER_PATH.write_text(job_id)
+    await _write_golden_pointer(job_id)
 
     title = manifest.get("treatment", {}).get("title", "Unknown")
     logger.success("Golden demo pointer set: {} -> {}", job_id[:8], title)
@@ -506,16 +540,13 @@ async def set_golden_demo(job_id: str):
 @app.get("/api/demo/golden")
 async def get_golden_demo():
     """Load the golden demo result via the pointer + manifest."""
-    if not GOLDEN_POINTER_PATH.exists():
+    golden_job_id = await _read_golden_pointer()
+    if not golden_job_id:
         raise HTTPException(status_code=404, detail="No golden demo set. Call POST /api/demo/set-golden/{job_id} first.")
 
-    golden_job_id = GOLDEN_POINTER_PATH.read_text().strip()
-    if not golden_job_id:
-        raise HTTPException(status_code=404, detail="Golden pointer file is empty.")
-
-    manifest = _load_job_manifest(golden_job_id)
+    manifest = await _load_job_manifest(golden_job_id)
     if not manifest:
-        raise HTTPException(status_code=404, detail=f"Golden job '{golden_job_id}' manifest not found on disk.")
+        raise HTTPException(status_code=404, detail=f"Golden job '{golden_job_id}' manifest not found.")
 
     return manifest
 
@@ -523,11 +554,12 @@ async def get_golden_demo():
 @app.get("/api/demo/explainer-audio")
 async def get_explainer_audio():
     """Return list of explainer step audio URLs (for auto-advance playback)."""
-    from studioz.generate_demo_audio import EXPLAINER_STEPS, EXPLAINER_CACHE_DIR
+    from studioz.generate_demo_audio import EXPLAINER_STEPS
     steps = []
     for step in EXPLAINER_STEPS:
-        wav_path = EXPLAINER_CACHE_DIR / f"{step['id']}.wav"
-        audio_url = f"/static/_assets/explainer_voice/{step['id']}.wav" if wav_path.exists() else None
+        blob_path = f"_assets/explainer_voice/{step['id']}.wav"
+        has_audio = await storage.exists(blob_path)
+        audio_url = f"/static/{blob_path}" if has_audio else None
         steps.append({
             "id": step["id"],
             "text": step["text"],
@@ -539,16 +571,14 @@ async def get_explainer_audio():
 @app.get("/api/demo/walkthrough-audio")
 async def get_walkthrough_audio():
     """Return the golden demo walkthrough audio URL."""
-    from studioz.generate_demo_audio import DEMO_WALKTHROUGH_DIR
-    pointer_path = Path("demo_results/golden_job_id.txt")
-    if not pointer_path.exists():
+    golden_job_id = await _read_golden_pointer()
+    if not golden_job_id:
         raise HTTPException(status_code=404, detail="No golden demo set")
-    golden_job_id = pointer_path.read_text().strip()
-    wav_path = DEMO_WALKTHROUGH_DIR / f"{golden_job_id}.wav"
-    if not wav_path.exists():
+    blob_path = f"_assets/demo_walkthrough/{golden_job_id}.wav"
+    if not await storage.exists(blob_path):
         raise HTTPException(status_code=404, detail="Walkthrough audio not generated yet. Run: python -m studioz.generate_demo_audio")
     return {
-        "audio_url": f"/static/_assets/demo_walkthrough/{golden_job_id}.wav",
+        "audio_url": f"/static/{blob_path}",
         "job_id": golden_job_id,
     }
 

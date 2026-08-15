@@ -1,6 +1,7 @@
 import type { PersonaOptions, PitchRequest, JobResponse } from "./types";
 
-const BASE = "";
+// API base URL: empty string for same-origin (dev w/ Vite proxy), or set via env var for deployed backend
+const BASE = import.meta.env.VITE_API_BASE_URL || "";
 
 export async function fetchPersonas(): Promise<PersonaOptions> {
   const res = await fetch(`${BASE}/api/personas`);

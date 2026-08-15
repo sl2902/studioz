@@ -7,6 +7,7 @@ from google import genai
 from google.genai import types
 from loguru import logger
 
+from studioz.clients.storage import storage
 from studioz.config import settings
 from studioz.ledger import ledger, LedgerEntry, estimate_image_cost
 
@@ -75,8 +76,11 @@ async def generate_frame_image(imagen_prompt: str, output_path: str, style: str 
         output_path,
     )
 
-    # Ensure output directory exists
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    # Ensure output directory exists (local backend) / no-op conceptually for GCS
+    # output_path is relative to outputs/ (e.g. "storyboard/{job_id}/frame.png")
+    blob_path = output_path
+    if blob_path.startswith("outputs/"):
+        blob_path = blob_path[len("outputs/"):]
 
     t0 = time.perf_counter()
     for attempt in range(_MAX_RETRIES):
@@ -122,9 +126,9 @@ async def generate_frame_image(imagen_prompt: str, output_path: str, style: str 
                 )
                 return None
 
-            # Write raw image bytes to disk
-            Path(output_path).write_bytes(image_bytes)
-            logger.success("Image saved: {}", output_path)
+            # Save image via storage backend
+            await storage.save_file(image_bytes, blob_path, "image/png")
+            logger.success("Image saved: {}", blob_path)
             latency = time.perf_counter() - t0
             cost = estimate_image_cost()
             ledger.record(LedgerEntry(

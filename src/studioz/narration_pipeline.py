@@ -11,13 +11,11 @@ from loguru import logger
 
 from studioz.agents.narrator import agent_narrator
 from studioz.clients.disclaimer_cards import generate_disclaimer_cards
+from studioz.clients.storage import storage, is_gcs
 from studioz.clients.tts_client import build_voice_map, generate_narration_audio
 from studioz.clients.video_builder import build_video, get_audio_duration
 from studioz.config import settings
 from studioz.schemas import NarrationScript, Storyboard
-
-
-VIDEO_OUTPUTS_DIR = Path("outputs/video")
 
 
 def _safe_title(title: str) -> str:
@@ -167,11 +165,10 @@ async def run_narration_pipeline(
 
     # Step 3: Generate per-frame TTS audio (concatenated into one file)
     if job_id:
-        audio_dir = Path("outputs/audio") / job_id
+        audio_blob_path = f"audio/{job_id}/{safe_title}_narration.wav"
     else:
-        audio_dir = Path("outputs/audio")
-    audio_dir.mkdir(parents=True, exist_ok=True)
-    audio_path = str(audio_dir / f"{safe_title}_narration.wav")
+        audio_blob_path = f"audio/{safe_title}_narration.wav"
+    audio_path = storage.local_path(audio_blob_path)
 
     _stage(f"tts:{total_frames}")
     print("\nGenerating narration audio via TTS (per-frame)...")
@@ -201,9 +198,20 @@ async def run_narration_pipeline(
     frame_image_paths = []
     frame_durations = []
     for i, frame in enumerate(storyboard.frames):
-        if frame.image_path and Path(frame.image_path).exists():
-            frame_image_paths.append(frame.image_path)
-            frame_durations.append(durations[i])
+        if frame.image_path:
+            # Resolve to local path (for local backend this is outputs/..., for GCS it stages from bucket)
+            img_blob = frame.image_path
+            if img_blob.startswith("outputs/"):
+                img_blob = img_blob[len("outputs/"):]
+            local_img = storage.local_path(img_blob)
+            if Path(local_img).exists():
+                frame_image_paths.append(local_img)
+                frame_durations.append(durations[i])
+            else:
+                logger.warning(
+                    "Frame {} has no image (skipping in video): {}",
+                    frame.frame_number, frame.image_path
+                )
         else:
             logger.warning(
                 "Frame {} has no image (skipping in video): {}",
@@ -222,17 +230,20 @@ async def run_narration_pipeline(
         frame_durations = [d * scale for d in frame_durations]
 
     if job_id:
-        video_dir = Path("outputs/video") / job_id
+        video_blob_path = f"video/{job_id}/{safe_title}.mp4"
     else:
-        video_dir = VIDEO_OUTPUTS_DIR
-    video_dir.mkdir(parents=True, exist_ok=True)
-    video_path = str(video_dir / f"{safe_title}.mp4")
+        video_blob_path = f"video/{safe_title}.mp4"
+    video_path = f"outputs/{video_blob_path}"
 
     _stage("video_assembly")
     print("\nAssembling video...")
 
     # Prepend disclaimer cards as silent pre-roll segments
-    card_output_dir = str(video_dir / "_cards") if job_id else "outputs/_cards"
+    if job_id:
+        card_blob_dir = f"video/{job_id}/_cards"
+    else:
+        card_blob_dir = "_cards"
+    card_output_dir = storage.local_path(card_blob_dir)
     disclaimer_cards = generate_disclaimer_cards(
         estimated_runtime_minutes=estimated_runtime_minutes,
         greenlit=greenlit,

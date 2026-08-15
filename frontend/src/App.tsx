@@ -1,136 +1,70 @@
 import { useState, useEffect } from "react";
+import { BrowserRouter, Routes, Route, useNavigate, useParams } from "react-router-dom";
 import type { JobResponse, PersonaOptions } from "./types";
 import { fetchGoldenDemo, fetchJobStatus, fetchWalkthroughAudio } from "./api";
 import { PitchForm } from "./components/PitchForm";
 import { ProgressView } from "./components/ProgressView";
 import { ResultsView } from "./components/ResultsView";
 import { ExplainerView } from "./components/ExplainerView";
-
-type AppView = "form" | "progress" | "results" | "explainer" | "loading";
+import { CoverScreen } from "./components/CoverScreen";
 
 const STORAGE_KEY = "studioz_active_job";
 
-function getJobIdFromUrl(): string | null {
-  const params = new URLSearchParams(window.location.search);
-  return params.get("job");
+// ============================================================
+// Cover Screen Route
+// ============================================================
+
+function CoverRoute() {
+  const navigate = useNavigate();
+  return (
+    <CoverScreen
+      onEnter={() => navigate("/app")}
+    />
+  );
 }
 
-function setJobIdInUrl(jobId: string | null) {
-  const url = new URL(window.location.href);
-  if (jobId) {
-    url.searchParams.set("job", jobId);
-  } else {
-    url.searchParams.delete("job");
-  }
-  window.history.replaceState({}, "", url.toString());
-}
+// ============================================================
+// Main App Route (pitch form + demo/explainer links)
+// ============================================================
 
-function App() {
-  const [view, setView] = useState<AppView>("loading");
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [jobResult, setJobResult] = useState<JobResponse | null>(null);
+function MainRoute() {
+  const navigate = useNavigate();
   const [personas, setPersonas] = useState<PersonaOptions | null>(null);
   const [demoLoading, setDemoLoading] = useState(false);
   const [demoError, setDemoError] = useState<string | null>(null);
   const [resumeJobId, setResumeJobId] = useState<string | null>(null);
 
-  // On mount: check URL and localStorage for an existing job
+  // Check for an in-progress job on mount
   useEffect(() => {
-    const urlJobId = getJobIdFromUrl();
     const storedJobId = localStorage.getItem(STORAGE_KEY);
-    const recoveredId = urlJobId || storedJobId;
-
-    if (recoveredId && recoveredId !== "golden-demo") {
-      // Try to resume this job
-      fetchJobStatus(recoveredId)
+    if (storedJobId) {
+      fetchJobStatus(storedJobId)
         .then((job) => {
-          if (job.status === "completed") {
-            setJobId(recoveredId);
-            setJobResult(job);
-            setView("results");
-            setJobIdInUrl(recoveredId);
-          } else if (job.status === "running" || job.status === "pending") {
-            setJobId(recoveredId);
-            setView("progress");
-            setJobIdInUrl(recoveredId);
+          if (job.status === "completed" || job.status === "running" || job.status === "pending") {
+            setResumeJobId(storedJobId);
           } else {
-            // Failed job — show form but offer resume
-            clearPersistedJob();
-            setView("form");
+            localStorage.removeItem(STORAGE_KEY);
           }
         })
         .catch(() => {
-          // Job not found (server restarted?) — show form
-          // If there's a stored ID, offer to clear it
-          if (storedJobId && !urlJobId) {
-            setResumeJobId(storedJobId);
-          }
-          clearPersistedJob();
-          setView("form");
+          // Job not found — offer resume in case server restart
+          setResumeJobId(storedJobId);
         });
-    } else {
-      setView("form");
     }
   }, []);
 
-  function persistJob(id: string) {
-    localStorage.setItem(STORAGE_KEY, id);
-    setJobIdInUrl(id);
-  }
-
-  function clearPersistedJob() {
-    localStorage.removeItem(STORAGE_KEY);
-    setJobIdInUrl(null);
-  }
-
-  const handleSubmit = (id: string) => {
-    setJobId(id);
-    setView("progress");
-    persistJob(id);
+  const handleSubmit = (jobId: string) => {
+    localStorage.setItem(STORAGE_KEY, jobId);
+    navigate(`/job/${jobId}`);
   };
-
-  const handleComplete = (job: JobResponse) => {
-    setJobResult(job);
-    setView("results");
-    // Keep in URL for shareability but clear localStorage (no longer "active")
-    localStorage.removeItem(STORAGE_KEY);
-  };
-
-  const handleReset = () => {
-    setView("form");
-    setJobId(null);
-    setJobResult(null);
-    setDemoError(null);
-    setResumeJobId(null);
-    clearPersistedJob();
-  };
-
-  const [walkthroughAudioUrl, setWalkthroughAudioUrl] = useState<string | null>(null);
 
   const handleViewDemo = async () => {
     setDemoLoading(true);
     setDemoError(null);
     try {
-      const [demoData, walkthroughData] = await Promise.all([
-        fetchGoldenDemo(),
-        fetchWalkthroughAudio(),
-      ]);
-      const fakeJob: JobResponse = {
-        job_id: "golden-demo",
-        status: "completed",
-        created_at: new Date().toISOString(),
-        result: demoData,
-        error: null,
-        current_stage: "completed",
-        regenerated_from: null,
-        video_job_id: null,
-        video_url: demoData.video_url || null,
-        video_status: demoData.video_url ? "completed" : null,
-      };
-      setWalkthroughAudioUrl(walkthroughData?.audio_url || null);
-      setJobResult(fakeJob);
-      setJobId("golden-demo");
-      setView("results");
+      // Pre-validate that the demo exists before navigating
+      await fetchGoldenDemo();
+      navigate("/demo");
     } catch (err) {
       setDemoError(err instanceof Error ? err.message : "Failed to load demo");
     } finally {
@@ -139,21 +73,234 @@ function App() {
   };
 
   const handleResumeJob = (id: string) => {
-    setJobId(id);
-    setView("progress");
-    persistJob(id);
+    navigate(`/job/${id}`);
     setResumeJobId(null);
   };
 
-  // Loading state while checking for recoverable job
-  if (view === "loading") {
-    return (
-      <div className="max-w-6xl mx-auto px-6 py-10 text-center text-gray-500">
-        Loading...
+  return (
+    <AppShell>
+      {/* Resume banner */}
+      {resumeJobId && (
+        <div className="max-w-2xl mx-auto mb-6 bg-indigo-900/20 border border-indigo-700/50 rounded-xl p-4 flex items-center justify-between">
+          <p className="text-sm text-indigo-300">
+            Found an in-progress job: <span className="font-mono">{resumeJobId.slice(0, 8)}...</span>
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => handleResumeJob(resumeJobId)}
+              className="px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg"
+            >
+              Resume
+            </button>
+            <button
+              onClick={() => { setResumeJobId(null); localStorage.removeItem(STORAGE_KEY); }}
+              className="px-3 py-1 text-xs text-gray-400 hover:text-gray-200"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      <PitchForm
+        onSubmit={handleSubmit}
+        personas={personas}
+        setPersonas={setPersonas}
+      />
+      <div className="max-w-2xl mx-auto mt-8 flex items-center justify-center gap-4">
+        <button
+          onClick={handleViewDemo}
+          disabled={demoLoading}
+          className="px-4 py-2 text-sm rounded-lg border border-[var(--color-border)] text-gray-400 hover:text-indigo-300 hover:border-indigo-500/50 transition-colors disabled:opacity-50"
+        >
+          {demoLoading ? "Loading..." : "🎬 View Demo Result"}
+        </button>
+        <button
+          onClick={() => navigate("/explainer")}
+          className="px-4 py-2 text-sm rounded-lg border border-[var(--color-border)] text-gray-400 hover:text-purple-300 hover:border-purple-500/50 transition-colors"
+        >
+          📊 Pipeline Explainer
+        </button>
       </div>
+      {demoError && (
+        <p className="text-center text-sm text-red-400 mt-3">{demoError}</p>
+      )}
+    </AppShell>
+  );
+}
+
+// ============================================================
+// Explainer Route
+// ============================================================
+
+function ExplainerRoute() {
+  const navigate = useNavigate();
+  return (
+    <ExplainerView onExit={() => navigate("/app")} />
+  );
+}
+
+// ============================================================
+// Demo Result Route (golden walkthrough)
+// ============================================================
+
+function DemoRoute() {
+  const navigate = useNavigate();
+  const [jobResult, setJobResult] = useState<JobResponse | null>(null);
+  const [walkthroughAudioUrl, setWalkthroughAudioUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    Promise.all([fetchGoldenDemo(), fetchWalkthroughAudio()])
+      .then(([demoData, walkthroughData]) => {
+        const fakeJob: JobResponse = {
+          job_id: "golden-demo",
+          status: "completed",
+          created_at: new Date().toISOString(),
+          result: demoData,
+          error: null,
+          current_stage: "completed",
+          regenerated_from: null,
+          video_job_id: null,
+          video_url: demoData.video_url || null,
+          video_status: demoData.video_url ? "completed" : null,
+        };
+        setJobResult(fakeJob);
+        setWalkthroughAudioUrl(walkthroughData?.audio_url || null);
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load demo"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) {
+    return (
+      <AppShell>
+        <div className="text-center text-gray-500 py-20">Loading demo result...</div>
+      </AppShell>
     );
   }
 
+  if (error || !jobResult) {
+    return (
+      <AppShell>
+        <div className="text-center py-20">
+          <p className="text-red-400 mb-4">{error || "Failed to load demo"}</p>
+          <button onClick={() => navigate("/app")} className="text-indigo-400 hover:text-indigo-300 underline text-sm">
+            ← Back to main
+          </button>
+        </div>
+      </AppShell>
+    );
+  }
+
+  return (
+    <AppShell>
+      <ResultsView
+        job={jobResult}
+        onReset={() => navigate("/app")}
+        sourceJobId="golden-demo"
+        personas={null}
+        walkthroughAudioUrl={walkthroughAudioUrl}
+      />
+    </AppShell>
+  );
+}
+
+// ============================================================
+// Job Route (progress or results based on status)
+// ============================================================
+
+function JobRoute() {
+  const { jobId } = useParams<{ jobId: string }>();
+  const navigate = useNavigate();
+  const [jobResult, setJobResult] = useState<JobResponse | null>(null);
+  const [status, setStatus] = useState<"loading" | "progress" | "results" | "error">("loading");
+
+  useEffect(() => {
+    if (!jobId) return;
+    fetchJobStatus(jobId)
+      .then((job) => {
+        if (job.status === "completed") {
+          setJobResult(job);
+          setStatus("results");
+          // Clear from localStorage since it's done
+          localStorage.removeItem(STORAGE_KEY);
+        } else if (job.status === "running" || job.status === "pending") {
+          setStatus("progress");
+        } else {
+          setStatus("error");
+        }
+      })
+      .catch(() => setStatus("error"));
+  }, [jobId]);
+
+  const handleComplete = (job: JobResponse) => {
+    setJobResult(job);
+    setStatus("results");
+    localStorage.removeItem(STORAGE_KEY);
+  };
+
+  const handleReset = () => {
+    localStorage.removeItem(STORAGE_KEY);
+    navigate("/app");
+  };
+
+  if (status === "loading") {
+    return (
+      <AppShell>
+        <div className="text-center text-gray-500 py-20">Loading job...</div>
+      </AppShell>
+    );
+  }
+
+  if (status === "error") {
+    return (
+      <AppShell>
+        <div className="text-center py-20">
+          <p className="text-red-400 mb-4">Job not found or failed</p>
+          <button onClick={() => navigate("/app")} className="text-indigo-400 hover:text-indigo-300 underline text-sm">
+            ← Submit another pitch
+          </button>
+        </div>
+      </AppShell>
+    );
+  }
+
+  if (status === "progress" && jobId) {
+    return (
+      <AppShell>
+        <ProgressView
+          jobId={jobId}
+          onComplete={handleComplete}
+          onError={handleReset}
+        />
+      </AppShell>
+    );
+  }
+
+  if (status === "results" && jobResult && jobId) {
+    return (
+      <AppShell>
+        <ResultsView
+          job={jobResult}
+          onReset={handleReset}
+          sourceJobId={jobId}
+          personas={null}
+          walkthroughAudioUrl={null}
+        />
+      </AppShell>
+    );
+  }
+
+  return null;
+}
+
+// ============================================================
+// Shared layout shell (header)
+// ============================================================
+
+function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="max-w-6xl mx-auto px-6 py-10">
       <header className="mb-10 text-center">
@@ -164,74 +311,26 @@ function App() {
           Multi-Agent Cinema Pre-Production Studio
         </p>
       </header>
-
-      {view === "form" && (
-        <>
-          {/* Resume banner */}
-          {resumeJobId && (
-            <div className="max-w-2xl mx-auto mb-6 bg-indigo-900/20 border border-indigo-700/50 rounded-xl p-4 flex items-center justify-between">
-              <p className="text-sm text-indigo-300">
-                Found an in-progress job: <span className="font-mono">{resumeJobId.slice(0, 8)}...</span>
-              </p>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => handleResumeJob(resumeJobId)}
-                  className="px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg"
-                >
-                  Resume
-                </button>
-                <button
-                  onClick={() => setResumeJobId(null)}
-                  className="px-3 py-1 text-xs text-gray-400 hover:text-gray-200"
-                >
-                  Dismiss
-                </button>
-              </div>
-            </div>
-          )}
-
-          <PitchForm
-            onSubmit={handleSubmit}
-            personas={personas}
-            setPersonas={setPersonas}
-          />
-          <div className="max-w-2xl mx-auto mt-8 flex items-center justify-center gap-4">
-            <button
-              onClick={handleViewDemo}
-              disabled={demoLoading}
-              className="px-4 py-2 text-sm rounded-lg border border-[var(--color-border)] text-gray-400 hover:text-indigo-300 hover:border-indigo-500/50 transition-colors disabled:opacity-50"
-            >
-              {demoLoading ? "Loading..." : "🎬 View Demo Result"}
-            </button>
-            <button
-              onClick={() => setView("explainer")}
-              className="px-4 py-2 text-sm rounded-lg border border-[var(--color-border)] text-gray-400 hover:text-purple-300 hover:border-purple-500/50 transition-colors"
-            >
-              📊 Pipeline Explainer
-            </button>
-          </div>
-          {demoError && (
-            <p className="text-center text-sm text-red-400 mt-3">{demoError}</p>
-          )}
-        </>
-      )}
-
-      {view === "progress" && jobId && (
-        <ProgressView
-          jobId={jobId}
-          onComplete={handleComplete}
-          onError={handleReset}
-        />
-      )}
-
-      {view === "results" && jobResult && (
-        <ResultsView job={jobResult} onReset={handleReset} sourceJobId={jobId!} personas={personas} walkthroughAudioUrl={walkthroughAudioUrl} />
-      )}
-
-      {view === "explainer" && (
-        <ExplainerView onExit={handleReset} />
-      )}
+      {children}
     </div>
+  );
+}
+
+// ============================================================
+// App (router setup)
+// ============================================================
+
+function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<CoverRoute />} />
+        <Route path="/app" element={<MainRoute />} />
+        <Route path="/explainer" element={<ExplainerRoute />} />
+        <Route path="/demo" element={<DemoRoute />} />
+        <Route path="/job/:jobId" element={<JobRoute />} />
+      </Routes>
+    </BrowserRouter>
   );
 }
 
