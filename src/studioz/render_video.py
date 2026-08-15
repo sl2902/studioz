@@ -2,7 +2,7 @@
 Render video from an existing storyboard JSON file.
 
 Skips screenwriter, committee, consensus, director, and image generation —
-goes straight to narration → TTS → video assembly using the storyboard
+goes straight to narration -> TTS -> video assembly using the storyboard
 that's already been generated and has images on disk.
 
 Usage:
@@ -52,7 +52,7 @@ def main():
         return
 
     print(f"[Storyboard] All {len(storyboard.frames)} frames have images on disk.")
-    print("Starting narration → TTS → video assembly...\n")
+    print("Starting narration -> TTS -> video assembly...\n")
 
     video_path = asyncio.run(run_narration_pipeline(storyboard))
     if video_path:
