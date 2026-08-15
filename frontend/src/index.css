@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+:root {
+  --color-primary: #6366f1;
+  --color-surface: #1a1a2e;
+  --color-surface-light: #25253e;
+  --color-border: #3a3a5c;
+}
+
+body {
+  @apply bg-[#0f0f1a] text-gray-100 min-h-screen antialiased;
+}
