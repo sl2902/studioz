@@ -60,3 +60,18 @@ export async function fetchGoldenDemo(): Promise<any> {
   }
   return res.json();
 }
+
+export async function fetchWalkthroughAudio(): Promise<{ audio_url: string; job_id: string } | null> {
+  const res = await fetch(`${BASE}/api/demo/walkthrough-audio`);
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function setGoldenDemo(jobId: string): Promise<any> {
+  const res = await fetch(`${BASE}/api/demo/set-golden/${jobId}`, { method: "POST" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || "Failed to set golden demo");
+  }
+  return res.json();
+}

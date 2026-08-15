@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import type { JobResponse, PersonaOptions } from "./types";
-import { fetchGoldenDemo, fetchJobStatus } from "./api";
+import { fetchGoldenDemo, fetchJobStatus, fetchWalkthroughAudio } from "./api";
 import { PitchForm } from "./components/PitchForm";
 import { ProgressView } from "./components/ProgressView";
 import { ResultsView } from "./components/ResultsView";
@@ -105,11 +105,16 @@ function App() {
     clearPersistedJob();
   };
 
+  const [walkthroughAudioUrl, setWalkthroughAudioUrl] = useState<string | null>(null);
+
   const handleViewDemo = async () => {
     setDemoLoading(true);
     setDemoError(null);
     try {
-      const demoData = await fetchGoldenDemo();
+      const [demoData, walkthroughData] = await Promise.all([
+        fetchGoldenDemo(),
+        fetchWalkthroughAudio(),
+      ]);
       const fakeJob: JobResponse = {
         job_id: "golden-demo",
         status: "completed",
@@ -122,6 +127,7 @@ function App() {
         video_url: demoData.video_url || null,
         video_status: demoData.video_url ? "completed" : null,
       };
+      setWalkthroughAudioUrl(walkthroughData?.audio_url || null);
       setJobResult(fakeJob);
       setJobId("golden-demo");
       setView("results");
@@ -219,7 +225,7 @@ function App() {
       )}
 
       {view === "results" && jobResult && (
-        <ResultsView job={jobResult} onReset={handleReset} sourceJobId={jobId!} personas={personas} />
+        <ResultsView job={jobResult} onReset={handleReset} sourceJobId={jobId!} personas={personas} walkthroughAudioUrl={walkthroughAudioUrl} />
       )}
 
       {view === "explainer" && (

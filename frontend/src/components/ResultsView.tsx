@@ -1,12 +1,42 @@
 import { useState, useEffect, useRef } from "react";
 import type { JobResponse, PersonaOptions, Storyboard } from "../types";
-import { renderVideo, fetchJobStatus, regenerateStoryboard, fetchPersonas } from "../api";
+import { renderVideo, fetchJobStatus, regenerateStoryboard, fetchPersonas, setGoldenDemo } from "../api";
 
 interface Props {
   job: JobResponse;
   onReset: () => void;
   sourceJobId: string;
   personas: PersonaOptions | null;
+  walkthroughAudioUrl?: string | null;
+}
+
+function SetAsDemoButton({ jobId }: { jobId: string }) {
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+
+  const handleClick = async () => {
+    setStatus("saving");
+    try {
+      await setGoldenDemo(jobId);
+      setStatus("saved");
+      setTimeout(() => setStatus("idle"), 3000);
+    } catch {
+      setStatus("error");
+      setTimeout(() => setStatus("idle"), 3000);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={status === "saving"}
+      className="text-sm text-gray-500 hover:text-emerald-400 transition-colors disabled:opacity-50"
+    >
+      {status === "idle" && "⭐ Set as Demo"}
+      {status === "saving" && "Saving..."}
+      {status === "saved" && "✓ Set as demo result"}
+      {status === "error" && "✗ Failed"}
+    </button>
+  );
 }
 
 const VIDEO_STAGES = [
@@ -70,7 +100,7 @@ function VideoProgressFlow({ stage }: { stage: string | null }) {
   );
 }
 
-export function ResultsView({ job, onReset, sourceJobId, personas: initialPersonas }: Props) {
+export function ResultsView({ job, onReset, sourceJobId, personas: initialPersonas, walkthroughAudioUrl }: Props) {
   const result = job.result!;
   const review = result.executive_review;
   const storyboard = result.storyboard;
@@ -177,8 +207,98 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
     }
   };
 
+  // Walkthrough audio auto-play (for golden demo view)
+  const walkthroughAudioRef = useRef<HTMLAudioElement | null>(null);
+  const videoPlayerRef = useRef<HTMLVideoElement | null>(null);
+  // Section highlighting: tracks which section of the walkthrough is currently being narrated
+  // Sections map to the narration script in generate_demo_audio.py:
+  //   0-25%  → "consensus" (exec review summary)
+  //   25-50% → "citations" (Parallel Search grounding)
+  //   50-75% → "storyboard" (frame inspection)
+  //   75-99% → "ledger" (cost/latency)
+  //   end    → "video" (auto-play)
+  const [walkthroughSection, setWalkthroughSection] = useState<
+    "idle" | "consensus" | "citations" | "storyboard" | "ledger" | "video" | null
+  >(walkthroughAudioUrl ? "idle" : null);
+  const [walkthroughPaused, setWalkthroughPaused] = useState(false);
+
+  const consensusRef = useRef<HTMLDivElement | null>(null);
+  const citationsRef = useRef<HTMLDivElement | null>(null);
+  const storyboardRef = useRef<HTMLDivElement | null>(null);
+  const ledgerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!walkthroughAudioUrl) return;
+    const audio = new Audio(walkthroughAudioUrl);
+    walkthroughAudioRef.current = audio;
+    audio.play().catch(() => {});
+    setWalkthroughSection("consensus");
+
+    // Scroll to executive consensus when narration starts
+    setTimeout(() => {
+      consensusRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 300);
+
+    audio.ontimeupdate = () => {
+      if (!audio.duration) return;
+      const progress = audio.currentTime / audio.duration;
+      if (progress < 0.25) {
+        setWalkthroughSection("consensus");
+      } else if (progress < 0.50) {
+        setWalkthroughSection((prev) => {
+          if (prev !== "citations") {
+            setTimeout(() => {
+              citationsRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+            }, 100);
+          }
+          return "citations";
+        });
+      } else if (progress < 0.75) {
+        setWalkthroughSection((prev) => {
+          if (prev !== "storyboard") {
+            setTimeout(() => {
+              storyboardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+            }, 100);
+          }
+          return "storyboard";
+        });
+      } else {
+        setWalkthroughSection((prev) => {
+          if (prev !== "ledger") {
+            // Expand the ledger table and scroll to it
+            setLedgerOpen(true);
+            setTimeout(() => {
+              ledgerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+            }, 100);
+          }
+          return "ledger";
+        });
+      }
+    };
+
+    audio.onended = () => {
+      setWalkthroughSection("video");
+      // Auto-play the video after walkthrough narration finishes
+      setTimeout(() => {
+        videoPlayerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+        setTimeout(() => {
+          videoPlayerRef.current?.play().catch(() => {});
+        }, 400);
+      }, 500);
+    };
+    return () => { audio.pause(); audio.ontimeupdate = null; audio.onended = null; };
+  }, [walkthroughAudioUrl]);
+
   function formatKey(key: string): string {
     return key.split("_").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+  }
+
+  // Walkthrough highlight ring for the section currently being narrated
+  function sectionHighlight(section: "consensus" | "citations" | "storyboard" | "ledger"): string {
+    if (walkthroughSection === section) {
+      return "ring-2 ring-indigo-400/60 shadow-lg shadow-indigo-500/10 transition-all duration-700";
+    }
+    return "transition-all duration-700";
   }
 
   return (
@@ -195,8 +315,38 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
         </div>
       </div>
 
+      {/* Walkthrough narration pause/play control */}
+      {walkthroughSection && walkthroughSection !== "idle" && walkthroughSection !== "video" && (
+        <div className="flex items-center justify-center">
+          <button
+            onClick={() => {
+              const audio = walkthroughAudioRef.current;
+              if (!audio) return;
+              if (walkthroughPaused) {
+                audio.play().catch(() => {});
+                setWalkthroughPaused(false);
+              } else {
+                audio.pause();
+                setWalkthroughPaused(true);
+              }
+            }}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm rounded-lg border border-[var(--color-border)] text-gray-300 hover:text-indigo-300 hover:border-indigo-500/50 transition-colors"
+          >
+            {walkthroughPaused ? (
+              <>
+                <span className="text-indigo-400">▶</span> Resume Walkthrough
+              </>
+            ) : (
+              <>
+                <span className="text-gray-400">⏸</span> Pause Walkthrough
+              </>
+            )}
+          </button>
+        </div>
+      )}
+
       {/* Executive Summary */}
-      <div className="bg-[var(--color-surface)] rounded-xl p-6 border border-[var(--color-border)]">
+      <div ref={consensusRef} className={`bg-[var(--color-surface)] rounded-xl p-6 border border-[var(--color-border)] ${sectionHighlight("consensus")}`}>
         <h3 className="text-lg font-semibold text-gray-100 mb-3">Executive Consensus</h3>
         <p className="text-gray-300 text-sm leading-relaxed">{review.summary}</p>
         <div className="grid grid-cols-2 gap-4 mt-4">
@@ -229,7 +379,7 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
 
       {/* Research Citations — via Parallel Search */}
       {citations && (
-        <div className="bg-[var(--color-surface)] rounded-xl p-6 border border-[var(--color-border)]">
+        <div ref={citationsRef} className={`bg-[var(--color-surface)] rounded-xl p-6 border border-[var(--color-border)] ${sectionHighlight("citations")}`}>
           <div className="flex items-center gap-3 mb-4">
             <h3 className="text-lg font-semibold text-gray-100">Research Citations</h3>
             <span className="px-2 py-0.5 text-[10px] font-semibold rounded bg-indigo-900/50 text-indigo-300 border border-indigo-700">
@@ -283,7 +433,7 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
 
       {/* Storyboard */}
       {storyboard && (
-        <div className="bg-[var(--color-surface)] rounded-xl p-6 border border-[var(--color-border)]">
+        <div ref={storyboardRef} className={`bg-[var(--color-surface)] rounded-xl p-6 border border-[var(--color-border)] ${sectionHighlight("storyboard")}`}>
           <h3 className="text-lg font-semibold text-gray-100 mb-4">Storyboard: {storyboard.title}</h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {storyboard.frames.map((frame) => (
@@ -407,7 +557,7 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
           {/* Video already exists (from parent job or this session) */}
           {(videoUrl || job.video_url) && (
             <div>
-              <video src={videoUrl || job.video_url!} controls className="w-full max-w-2xl rounded-lg border border-[var(--color-border)]" />
+              <video ref={videoPlayerRef} src={videoUrl || job.video_url!} controls className="w-full max-w-2xl rounded-lg border border-[var(--color-border)]" />
               <button
                 onClick={handleRenderVideo}
                 disabled={videoLoading}
@@ -444,7 +594,7 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
 
       {/* Ledger Table (collapsible) */}
       {result.ledger_entries && result.ledger_entries.length > 0 && (
-        <div className="bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)] overflow-hidden">
+        <div ref={ledgerRef} className={`bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)] overflow-hidden ${sectionHighlight("ledger")}`}>
           <button
             onClick={() => setLedgerOpen(!ledgerOpen)}
             className="w-full p-4 text-left text-sm text-gray-400 hover:text-gray-300 flex items-center justify-between"
@@ -526,10 +676,13 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
       )}
 
       {/* Actions */}
-      <div className="text-center pt-4">
+      <div className="text-center pt-4 flex items-center justify-center gap-6">
         <button onClick={onReset} className="text-indigo-400 hover:text-indigo-300 underline text-sm">
           ← Submit another pitch
         </button>
+        {sourceJobId !== "golden-demo" && (
+          <SetAsDemoButton jobId={sourceJobId} />
+        )}
       </div>
     </div>
   );

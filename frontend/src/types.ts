@@ -16,6 +16,7 @@ export interface PitchRequest {
   screenwriter_persona: string;
   director_persona: string;
   force: boolean;
+  bypass_cache: boolean;
 }
 
 export interface SearchResultCitation {

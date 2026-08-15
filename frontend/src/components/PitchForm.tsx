@@ -22,6 +22,7 @@ export function PitchForm({ onSubmit, personas, setPersonas }: Props) {
   const [screenwriter, setScreenwriter] = useState("");
   const [director, setDirector] = useState("");
   const [force, setForce] = useState(true);
+  const [bypassCache, setBypassCache] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,6 +53,7 @@ export function PitchForm({ onSubmit, personas, setPersonas }: Props) {
       screenwriter_persona: screenwriter,
       director_persona: director,
       force,
+      bypass_cache: bypassCache,
     };
 
     try {
@@ -165,6 +167,19 @@ export function PitchForm({ onSubmit, personas, setPersonas }: Props) {
         />
         <label htmlFor="force" className="text-sm text-gray-300">
           Override committee rejection and generate storyboard anyway
+        </label>
+      </div>
+
+      <div className="flex items-center gap-3 bg-[var(--color-surface)] rounded-xl p-4 border border-[var(--color-border)]">
+        <input
+          type="checkbox"
+          id="bypass_cache"
+          checked={bypassCache}
+          onChange={(e) => setBypassCache(e.target.checked)}
+          className="w-4 h-4 rounded border-gray-600 text-purple-500 focus:ring-purple-500/50"
+        />
+        <label htmlFor="bypass_cache" className="text-sm text-gray-300">
+          Bypass cache (force a fresh run even if identical pitch was submitted before)
         </label>
       </div>
 
