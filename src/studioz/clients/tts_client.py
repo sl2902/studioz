@@ -112,14 +112,12 @@ async def _generate_single_speaker_pcm(text: str, voice: str = NARRATOR_VOICE) -
 async def _generate_multi_speaker_pcm(
     segment: NarrationSegment,
     character_voice: str,
-) -> bytes | None:
+) -> tuple[bytes, float, float] | None:
     """
     Generate PCM for a multi-speaker frame (Narrator + one character).
 
-    Strategy: Generate each speaker's audio via separate single-speaker calls
-    to guarantee the correct voice is used for each. The Gemini multi-speaker
-    API has a known bug where voice_name assignments are intermittently ignored
-    (see https://discuss.ai.google.dev/t/84125). Separate calls are reliable.
+    Returns (combined_pcm, narrator_duration_seconds, dialogue_duration_seconds)
+    or None on failure.
     """
     # Generate narrator portion
     narrator_pcm = await _generate_single_speaker_pcm(
@@ -141,10 +139,14 @@ async def _generate_multi_speaker_pcm(
             segment.frame_number, segment.dialogue.character_name,
         )
         # Fall back to narrator-only if character fails
-        return narrator_pcm
+        narrator_dur = len(narrator_pcm) / (_PCM_SAMPLE_RATE * _PCM_SAMPLE_WIDTH * _PCM_CHANNELS)
+        return (narrator_pcm, narrator_dur, 0.0)
+
+    narrator_dur = len(narrator_pcm) / (_PCM_SAMPLE_RATE * _PCM_SAMPLE_WIDTH * _PCM_CHANNELS)
+    dialogue_dur = len(character_pcm) / (_PCM_SAMPLE_RATE * _PCM_SAMPLE_WIDTH * _PCM_CHANNELS)
 
     # Concatenate: narrator audio then character audio
-    return narrator_pcm + character_pcm
+    return (narrator_pcm + character_pcm, narrator_dur, dialogue_dur)
 
 
 async def generate_narration_audio(
@@ -172,6 +174,9 @@ async def generate_narration_audio(
     all_pcm = bytearray()
     succeeded = 0
 
+    # Per-frame timing: list of (narrator_duration, dialogue_duration) per segment
+    frame_timings: list[tuple[float, float]] = []
+
     for i, seg in enumerate(segments):
         t0 = time.perf_counter()
         if seg.dialogue and seg.dialogue.character_name in voice_map:
@@ -182,11 +187,22 @@ async def generate_narration_audio(
                 seg.frame_number, seg.dialogue.character_name,
                 seg.dialogue.character_gender, character_voice,
             )
-            pcm = await _generate_multi_speaker_pcm(seg, character_voice)
+            result = await _generate_multi_speaker_pcm(seg, character_voice)
+            if result is not None:
+                pcm, narrator_dur, dialogue_dur = result
+                frame_timings.append((narrator_dur, dialogue_dur))
+            else:
+                pcm = None
+                frame_timings.append((0.0, 0.0))
         else:
             # Single speaker: Narrator only
             logger.info("TTS frame {}: Narrator only", seg.frame_number)
             pcm = await _generate_single_speaker_pcm(seg.narrator_text)
+            if pcm is not None:
+                total_dur = len(pcm) / (_PCM_SAMPLE_RATE * _PCM_SAMPLE_WIDTH * _PCM_CHANNELS)
+                frame_timings.append((total_dur, 0.0))
+            else:
+                frame_timings.append((0.0, 0.0))
 
         latency = time.perf_counter() - t0
         if pcm is not None:
@@ -216,11 +232,11 @@ async def generate_narration_audio(
 
     if succeeded == 0:
         logger.error("All TTS segments failed — no audio generated")
-        return None
+        return None, []
 
     _write_wav_file(output_path, bytes(all_pcm))
     logger.success(
         "Narration audio saved: {} ({}/{} frames, {} bytes PCM)",
         output_path, succeeded, len(segments), len(all_pcm),
     )
-    return output_path
+    return output_path, frame_timings

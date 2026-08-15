@@ -45,6 +45,15 @@ async def agent_narrator(storyboard: Storyboard) -> NarrationScript:
        - AT MOST one character speaks per frame. If no dialogue fits
          naturally, set dialogue to null.
 
+    DIALOGUE REQUIREMENT RULE:
+    - If a frame's characters_present list has 2 or more entries, that segment
+      MUST have dialogue populated — there's an interaction happening between
+      characters, so one of them should speak.
+    - If characters_present has 0-1 entries, dialogue is optional (narrator-only
+      is fine for solo or environment shots).
+    - The dialogue character_name MUST be one of the names listed in that
+      frame's characters_present.
+
     RULES:
     - Return exactly one NarrationSegment per frame, in frame order.
     - Audio tags are square-bracket modifiers: [whispers], [shouting],
@@ -62,7 +71,7 @@ async def agent_narrator(storyboard: Storyboard) -> NarrationScript:
     """
 
     frames_text = "\n".join(
-        f"Frame {f.frame_number}: {f.scene_description}"
+        f"Frame {f.frame_number} (characters_present: {f.characters_present}): {f.scene_description}"
         for f in storyboard.frames
     )
 

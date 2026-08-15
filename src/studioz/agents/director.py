@@ -56,6 +56,16 @@ async def agent_director(
       the scene_description as reported/ambient speech rather than direct dialogue
       (e.g. "In the background, the sonar technician calls out a warning").
 
+    CHARACTERS_PRESENT RULE:
+    - For EVERY frame, populate the characters_present field with a list of
+      names of all distinct characters visibly present in that frame's scene.
+    - Include any character who is described, mentioned, or implied as being
+      physically in the scene — not just the one speaking.
+    - Use consistent character names across frames (e.g. always "Jax", not
+      sometimes "Jax" and sometimes "Captain Jax").
+    - If a frame has no named characters (e.g. a pure environment/object shot),
+      set characters_present to an empty list.
+
     CRITICAL RULES for the imagen_prompt field:
     - Describe your directorial style using ONLY visual language: camera angles,
       lens choices, lighting setups, color palettes, movement, composition.

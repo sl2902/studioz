@@ -4,6 +4,7 @@ Called from pipeline.py when --render-video is set.
 """
 
 import re
+import time
 from pathlib import Path
 
 from loguru import logger
@@ -12,6 +13,7 @@ from studioz.agents.narrator import agent_narrator
 from studioz.clients.disclaimer_cards import generate_disclaimer_cards
 from studioz.clients.tts_client import build_voice_map, generate_narration_audio
 from studioz.clients.video_builder import build_video, get_audio_duration
+from studioz.config import settings
 from studioz.schemas import NarrationScript, Storyboard
 
 
@@ -95,6 +97,58 @@ async def run_narration_pipeline(
     print("\nRunning Narrator Agent...")
     narration = await agent_narrator(storyboard)
 
+    # Validate: frames with 2+ characters must have dialogue
+    MAX_DIALOGUE_RETRIES = 2
+    violations = []
+    for seg, frame in zip(narration.segments, storyboard.frames):
+        if len(frame.characters_present) >= 2 and seg.dialogue is None:
+            violations.append((seg.frame_number, frame.characters_present))
+
+    if violations:
+        logger.warning(
+            "Dialogue violations found: {} frame(s) with 2+ characters but no dialogue",
+            len(violations),
+        )
+        for attempt in range(MAX_DIALOGUE_RETRIES):
+            # Build targeted fix instruction
+            fix_instructions = []
+            for frame_num, chars in violations:
+                fix_instructions.append(
+                    f"Frame {frame_num} has characters {chars} present but no dialogue. "
+                    f"Add a dialogue line from one of: {', '.join(chars)}."
+                )
+            fix_text = "\n".join(fix_instructions)
+
+            logger.info("Retrying narrator with targeted dialogue fix (attempt {}/{})", attempt + 1, MAX_DIALOGUE_RETRIES)
+            t0_retry = time.perf_counter()
+            narration = await agent_narrator(storyboard)
+            retry_latency = time.perf_counter() - t0_retry
+
+            from studioz.ledger import ledger, LedgerEntry, estimate_text_cost
+            ledger.record(LedgerEntry(
+                step_name=f"narrator_dialogue_fix_{attempt + 1}",
+                latency_seconds=retry_latency,
+                estimated_cost_usd=estimate_text_cost(settings.model_fast, 2000, 2000),
+                model=settings.model_fast,
+                success=True,
+            ))
+
+            # Re-check violations
+            violations = []
+            for seg, frame in zip(narration.segments, storyboard.frames):
+                if len(frame.characters_present) >= 2 and seg.dialogue is None:
+                    violations.append((seg.frame_number, frame.characters_present))
+
+            if not violations:
+                logger.info("Dialogue violations resolved after {} retry(s)", attempt + 1)
+                break
+        else:
+            if violations:
+                logger.warning(
+                    "Dialogue violations persist after {} retries — proceeding without dialogue for frames: {}",
+                    MAX_DIALOGUE_RETRIES, [v[0] for v in violations],
+                )
+
     print(f"\n[Narration Script] {len(narration.segments)} segments:")
     for seg in narration.segments:
         dialogue_info = ""
@@ -121,7 +175,8 @@ async def run_narration_pipeline(
 
     _stage(f"tts:{total_frames}")
     print("\nGenerating narration audio via TTS (per-frame)...")
-    result = await generate_narration_audio(narration.segments, voice_map, audio_path)
+    tts_result = await generate_narration_audio(narration.segments, voice_map, audio_path)
+    result, frame_timings = tts_result if tts_result[0] is not None else (None, [])
     if result is None:
         logger.error("TTS generation failed — cannot assemble video")
         print("[Video] TTS generation failed. Skipping video assembly.")
@@ -191,6 +246,9 @@ async def run_narration_pipeline(
         total_card_duration = sum(card_durations)
         frame_image_paths = card_paths + frame_image_paths
         frame_durations = card_durations + frame_durations
+        # Prepend card entries to frame_timings (cards have no dialogue)
+        card_timings = [(dur, 0.0) for dur in card_durations]
+        frame_timings = card_timings + frame_timings
         print(f"[Video] Prepending {len(disclaimer_cards)} disclaimer card(s) ({total_card_duration:.1f}s)")
 
         # Prepend silence to the narration audio so it starts after the cards
@@ -208,7 +266,7 @@ async def run_narration_pipeline(
         audio_path = padded_audio_path
         print(f"[Video] Audio padded with {total_card_duration:.1f}s silence")
 
-    result = await build_video(frame_image_paths, frame_durations, audio_path, video_path)
+    result = await build_video(frame_image_paths, frame_durations, audio_path, video_path, frame_timings=frame_timings)
     if result is None:
         print("[Video] Assembly failed.")
         return None

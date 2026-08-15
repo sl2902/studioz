@@ -25,66 +25,90 @@ from studioz.schemas import PitchBrief, ScriptTreatment, Storyboard
 
 OUTPUTS_DIR = Path("outputs/storyboard")
 
-# Color words banned in stick_figure prompts (case-insensitive regex)
+# ============================================================
+# Pre-generation prompt reviewer
+# ============================================================
+
+# Fast regex patterns for known bad patterns (free, no LLM call)
 _BANNED_COLOR_PATTERN = re.compile(
     r"\b(red|green|blue|orange|yellow|purple|pink|colou?r(?:ed|ful)?)\b",
     re.IGNORECASE,
 )
+_TEMPORAL_PATTERN = re.compile(
+    r"\b(initially|then|after(?:ward)?|replaced by|transforms into|becomes|eventually|later|suddenly)\b",
+    re.IGNORECASE,
+)
+_PARENTHESIZED_NAME_PATTERN = re.compile(
+    r"\([A-Z][A-Za-z._\-' ]{1,20}\)",
+)
 
 
-def contains_color_language(imagen_prompt: str) -> bool:
-    """Case-insensitive check for banned color words in a prompt."""
-    return bool(_BANNED_COLOR_PATTERN.search(imagen_prompt))
+def _fast_regex_check(imagen_prompt: str, image_style: str) -> list[str]:
+    """Run fast, free regex checks. Returns list of issues found (empty if clean)."""
+    issues = []
+    if image_style == "stick_figure" and _BANNED_COLOR_PATTERN.search(imagen_prompt):
+        matches = _BANNED_COLOR_PATTERN.findall(imagen_prompt)
+        issues.append(f"Color words in monochrome-only style: {matches}")
+    temporal = _TEMPORAL_PATTERN.findall(imagen_prompt)
+    if temporal:
+        issues.append(f"Temporal-sequence language (can't depict in static image): {temporal}")
+    names = _PARENTHESIZED_NAME_PATTERN.findall(imagen_prompt)
+    if names:
+        issues.append(f"Parenthesized names (will render as text labels): {names}")
+    return issues
 
 
-async def _rewrite_prompt_remove_color(imagen_prompt: str) -> str:
+async def _llm_review_prompt(imagen_prompt: str, style_constraints: str) -> tuple[bool, list[str], str | None]:
     """
-    Use a cheap text model to rewrite a prompt, removing all color references
-    while preserving content and meaning. Replaces color-based status indicators
-    with shape-based equivalents.
+    Holistic LLM-based prompt review against style constraints.
+    Returns (passed, issues, corrected_prompt_or_none).
     """
-    rewrite_instruction = (
-        "Rewrite the following image generation prompt to remove ALL color references "
-        "while preserving the same content and meaning. Replace color-based status "
-        "indicators (red X, green checkmark, red warning, green light) with shape-based "
-        "equivalents (plain black X shape, plain black checkmark outline, black warning "
-        "triangle, black circle outline). The rewritten prompt must describe ONLY black "
-        "line art on a white background. Return ONLY the rewritten prompt, nothing else."
+    from studioz.schemas import PromptReviewResult
+    review_instruction = (
+        "You are a quality reviewer for image generation prompts. Check this prompt "
+        "against the following constraints and determine if it would produce a valid image.\n\n"
+        f"CONSTRAINTS:\n{style_constraints}\n\n"
+        "COMMON VIOLATIONS TO CHECK:\n"
+        "- Any text, labels, words, or legible writing described\n"
+        "- Temporal sequences (before/after, transformations) in a single image\n"
+        "- Character names that would render as visible text labels\n"
+        "- Color references when monochrome is required\n"
+        "- 'Text panels', 'documents', 'scripts' that would render as text\n\n"
+        "If the prompt violates ANY constraint, provide a corrected version that "
+        "fixes all violations while preserving the same scene content."
     )
     try:
         response = await client.aio.models.generate_content(
             model=settings.model_fast,
-            contents=f"{rewrite_instruction}\n\nOriginal prompt:\n{imagen_prompt}",
-            config=types.GenerateContentConfig(temperature=0.1),
+            contents=f"{review_instruction}\n\nPROMPT TO REVIEW:\n{imagen_prompt}",
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=PromptReviewResult,
+                temperature=0.1,
+            ),
         )
-        rewritten = response.text.strip()
-        # Sanity check: if the rewrite still contains color words, fall back to regex stripping
-        if contains_color_language(rewritten):
-            logger.warning("Rewrite still contains color words — applying regex fallback")
-            rewritten = _BANNED_COLOR_PATTERN.sub("black", rewritten)
-        return rewritten
+        result: PromptReviewResult = response.parsed
+        return result.passed, result.issues, result.corrected_prompt
     except Exception as e:
-        logger.warning("Color rewrite failed ({}), applying regex fallback", e)
-        return _BANNED_COLOR_PATTERN.sub("black", imagen_prompt)
+        logger.warning("LLM prompt review failed ({}), treating as pass", e)
+        return True, [], None
 
 
 async def _rewrite_prompt_for_issues(
     imagen_prompt: str, issues: list[str], style_constraints: str
 ) -> str:
     """
-    Rewrite an image prompt to fix specific issues identified by the inspector.
+    Rewrite an image prompt to fix specific issues.
     Uses a cheap text model to incorporate feedback without losing the original intent.
     """
     issues_text = "\n".join(f"- {issue}" for issue in issues)
     rewrite_instruction = (
-        "You are fixing an image generation prompt that produced a flawed image. "
-        "The following issues were found by an automated inspector:\n\n"
+        "You are fixing an image generation prompt. "
+        "The following issues were found:\n\n"
         f"{issues_text}\n\n"
         f"Style constraints that MUST be respected:\n{style_constraints}\n\n"
-        "Rewrite the prompt below to avoid ALL of the listed issues while preserving "
-        "the same scene content and composition. Be specific about what to change — "
-        "for example, if text was found, remove any description of text/labels/documents. "
-        "If the background was wrong, explicitly state 'on a pure white background'. "
+        "Rewrite the prompt to avoid ALL listed issues while preserving "
+        "the same scene content and composition. "
         "Return ONLY the rewritten prompt, nothing else."
     )
     try:
@@ -95,51 +119,93 @@ async def _rewrite_prompt_for_issues(
         )
         rewritten = response.text.strip()
         if not rewritten or len(rewritten) < 20:
-            logger.warning("Issue-based rewrite too short, keeping original prompt")
             return imagen_prompt
         return rewritten
     except Exception as e:
-        logger.warning("Issue-based prompt rewrite failed ({}), keeping original", e)
+        logger.warning("Prompt rewrite failed ({}), keeping original", e)
         return imagen_prompt
 
 
 async def validate_and_rewrite_prompts(storyboard: Storyboard, image_style: str) -> Storyboard:
     """
-    Upstream validation: for stick_figure-style frames, check each imagen_prompt
-    for banned color words. If found, rewrite the prompt using a cheap text model
-    BEFORE any image generation happens.
+    Pre-generation prompt reviewer. Catches violations BEFORE spending on image generation.
+
+    Two layers applied to ALL styles (not just stick_figure):
+    1. Fast regex pre-checks (free): color, temporal, parenthesized names
+    2. LLM holistic review (cheap ~$0.003): semantic check against full constraint set
+
+    Runs after Director generates Storyboard, before any generate_frame_image call.
     """
-    if image_style != "stick_figure":
-        return storyboard
+    if image_style == "stick_figure":
+        style_constraints = (
+            "Zero legible text — no labels, names, words, documents, or text panels. "
+            "100% black lines on pure white background — no color anywhere. "
+            "xkcd-style minimalist stick figures. Single static moment only. "
+            "Max 2-3 figures, one clear focal action. No parenthesized names."
+        )
+    else:
+        style_constraints = (
+            "No on-screen text, captions, logos, or watermarks. "
+            "No character names as visible labels. "
+            "Single static moment — no temporal sequences. "
+            "Pure visual scene description."
+        )
 
     for frame in storyboard.frames:
-        if contains_color_language(frame.imagen_prompt):
-            logger.warning(
-                "Frame {} imagen_prompt contains color language — rewriting upstream",
-                frame.frame_number,
-            )
-            logger.debug("Original prompt: {}", frame.imagen_prompt)
+        prompt = frame.imagen_prompt
 
-            t0 = time.perf_counter()
-            rewritten = await _rewrite_prompt_remove_color(frame.imagen_prompt)
-            latency = t0 and time.perf_counter() - t0
+        # Layer 1: Fast regex checks (free)
+        regex_issues = _fast_regex_check(prompt, image_style)
 
-            # Get token usage from response if available
-            cost = estimate_text_cost(settings.model_fast, 500, 500)  # Approximate
+        if regex_issues:
+            # Regex caught issues — rewrite immediately (skip LLM review)
+            logger.info("Frame {} regex pre-check: {}", frame.frame_number, regex_issues)
             ledger.record(LedgerEntry(
-                step_name=f"color_rewrite_frame_{frame.frame_number}",
-                latency_seconds=latency,
-                estimated_cost_usd=cost,
+                step_name=f"review_prompt_frame_{frame.frame_number}",
+                latency_seconds=0.0,
+                estimated_cost_usd=0.0,
+                model="regex",
+                success=True,
+            ))
+            t0 = time.perf_counter()
+            frame.imagen_prompt = await _rewrite_prompt_for_issues(prompt, regex_issues, style_constraints)
+            rewrite_latency = time.perf_counter() - t0
+            ledger.record(LedgerEntry(
+                step_name=f"fix_prompt_frame_{frame.frame_number}",
+                latency_seconds=rewrite_latency,
+                estimated_cost_usd=estimate_text_cost(settings.model_fast, 600, 600),
+                model=settings.model_fast,
+                success=True,
+            ))
+        else:
+            # Layer 2: LLM holistic review (cheap)
+            t0 = time.perf_counter()
+            passed, llm_issues, corrected = await _llm_review_prompt(prompt, style_constraints)
+            review_latency = time.perf_counter() - t0
+            ledger.record(LedgerEntry(
+                step_name=f"review_prompt_frame_{frame.frame_number}",
+                latency_seconds=review_latency,
+                estimated_cost_usd=estimate_text_cost(settings.model_fast, 800, 400),
                 model=settings.model_fast,
                 success=True,
             ))
 
-            logger.info(
-                "Frame {} prompt rewritten in {:.1f}s — color words removed",
-                frame.frame_number, latency,
-            )
-            logger.debug("Rewritten prompt: {}", rewritten)
-            frame.imagen_prompt = rewritten
+            if not passed:
+                if corrected:
+                    frame.imagen_prompt = corrected
+                    logger.info("Frame {} LLM review fixed: {}", frame.frame_number, llm_issues)
+                elif llm_issues:
+                    # LLM found issues but didn't provide a fix — rewrite via separate call
+                    t0 = time.perf_counter()
+                    frame.imagen_prompt = await _rewrite_prompt_for_issues(prompt, llm_issues, style_constraints)
+                    fix_latency = time.perf_counter() - t0
+                    ledger.record(LedgerEntry(
+                        step_name=f"fix_prompt_frame_{frame.frame_number}",
+                        latency_seconds=fix_latency,
+                        estimated_cost_usd=estimate_text_cost(settings.model_fast, 600, 600),
+                        model=settings.model_fast,
+                        success=True,
+                    ))
 
     return storyboard
 

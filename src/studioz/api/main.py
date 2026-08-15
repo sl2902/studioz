@@ -72,6 +72,9 @@ def _path_to_url(file_path: str | None) -> str | None:
 MANIFESTS_DIR = Path("outputs/jobs")
 
 
+GOLDEN_POINTER_PATH = Path("demo_results/golden_job_id.txt")
+
+
 def _persist_job_manifest(job_id: str, result: dict) -> None:
     """Auto-write a job's result to disk as a manifest for durability."""
     manifest_dir = MANIFESTS_DIR / job_id
@@ -81,6 +84,12 @@ def _persist_job_manifest(job_id: str, result: dict) -> None:
     public_result = {k: v for k, v in result.items() if not k.startswith("_")}
     manifest_path.write_text(json.dumps(public_result, indent=2, default=str))
     logger.info("Job manifest persisted: {}", manifest_path)
+
+    # Bootstrap auto-golden: if no golden pointer exists yet, set this job as golden
+    if not GOLDEN_POINTER_PATH.exists():
+        GOLDEN_POINTER_PATH.parent.mkdir(exist_ok=True)
+        GOLDEN_POINTER_PATH.write_text(job_id)
+        logger.success("Bootstrap: auto-set golden demo pointer -> {} (first completed job)", job_id[:8])
 
 
 def _load_job_manifest(job_id: str) -> dict | None:
@@ -486,9 +495,8 @@ async def set_golden_demo(job_id: str):
         raise HTTPException(status_code=404, detail=f"No manifest found for job '{job_id}'. Job must be completed first.")
 
     # Write the pointer
-    pointer_path = Path("demo_results/golden_job_id.txt")
-    pointer_path.parent.mkdir(exist_ok=True)
-    pointer_path.write_text(job_id)
+    GOLDEN_POINTER_PATH.parent.mkdir(exist_ok=True)
+    GOLDEN_POINTER_PATH.write_text(job_id)
 
     title = manifest.get("treatment", {}).get("title", "Unknown")
     logger.success("Golden demo pointer set: {} -> {}", job_id[:8], title)
@@ -504,11 +512,10 @@ async def set_golden_demo(job_id: str):
 @app.get("/api/demo/golden")
 async def get_golden_demo():
     """Load the golden demo result via the pointer + manifest."""
-    pointer_path = Path("demo_results/golden_job_id.txt")
-    if not pointer_path.exists():
+    if not GOLDEN_POINTER_PATH.exists():
         raise HTTPException(status_code=404, detail="No golden demo set. Call POST /api/demo/set-golden/{job_id} first.")
 
-    golden_job_id = pointer_path.read_text().strip()
+    golden_job_id = GOLDEN_POINTER_PATH.read_text().strip()
     if not golden_job_id:
         raise HTTPException(status_code=404, detail="Golden pointer file is empty.")
 
@@ -517,6 +524,48 @@ async def get_golden_demo():
         raise HTTPException(status_code=404, detail=f"Golden job '{golden_job_id}' manifest not found on disk.")
 
     return manifest
+
+
+@app.get("/api/demo/explainer-audio")
+async def get_explainer_audio():
+    """Return list of explainer step audio URLs (for auto-advance playback)."""
+    from studioz.generate_demo_audio import EXPLAINER_STEPS, EXPLAINER_CACHE_DIR
+    steps = []
+    for step in EXPLAINER_STEPS:
+        wav_path = EXPLAINER_CACHE_DIR / f"{step['id']}.wav"
+        audio_url = f"/static/_assets/explainer_voice/{step['id']}.wav" if wav_path.exists() else None
+        steps.append({
+            "id": step["id"],
+            "text": step["text"],
+            "audio_url": audio_url,
+        })
+    return {"steps": steps, "all_cached": all(s["audio_url"] for s in steps)}
+
+
+@app.get("/api/demo/walkthrough-audio")
+async def get_walkthrough_audio():
+    """Return the golden demo walkthrough audio URL."""
+    from studioz.generate_demo_audio import DEMO_WALKTHROUGH_DIR
+    pointer_path = Path("demo_results/golden_job_id.txt")
+    if not pointer_path.exists():
+        raise HTTPException(status_code=404, detail="No golden demo set")
+    golden_job_id = pointer_path.read_text().strip()
+    wav_path = DEMO_WALKTHROUGH_DIR / f"{golden_job_id}.wav"
+    if not wav_path.exists():
+        raise HTTPException(status_code=404, detail="Walkthrough audio not generated yet. Run: python -m studioz.generate_demo_audio")
+    return {
+        "audio_url": f"/static/_assets/demo_walkthrough/{golden_job_id}.wav",
+        "job_id": golden_job_id,
+    }
+
+
+@app.post("/api/demo/generate-audio")
+async def trigger_demo_audio_generation():
+    """Generate/cache all demo audio (explainer steps + walkthrough). One-time action."""
+    from studioz.generate_demo_audio import generate_explainer_audio, generate_demo_walkthrough
+    await generate_explainer_audio()
+    await generate_demo_walkthrough()
+    return {"status": "generated"}
 
 
 @app.get("/api/health")

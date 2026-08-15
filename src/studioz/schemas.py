@@ -57,6 +57,10 @@ class StoryboardFrame(BaseModel):
         default=None,
         description="The specific issues from the last failed inspection, if inspection_passed is False"
     )
+    characters_present: list[str] = Field(
+        default_factory=list,
+        description="Names of distinct characters visibly present in this frame's scene"
+    )
 
 class Storyboard(BaseModel):
     title: str = Field(description="Film title this storyboard belongs to")
@@ -115,6 +119,12 @@ class NarrationScript(BaseModel):
 class FrameInspectionResult(BaseModel):
     passed: bool = Field(description="Whether the generated image matches its intended content and constraints")
     issues: list[str] = Field(default_factory=list, description="Specific problems found, empty if passed=True")
+
+
+class PromptReviewResult(BaseModel):
+    passed: bool = Field(description="Whether the prompt passes all constraint checks")
+    issues: list[str] = Field(default_factory=list, description="Specific violations found")
+    corrected_prompt: str | None = Field(default=None, description="Rewritten prompt if passed=False")
 
 
 class SearchResultCitation(BaseModel):
