@@ -3,6 +3,22 @@ import type { PersonaOptions, PitchRequest, JobResponse } from "./types";
 // API base URL: empty string for same-origin (dev w/ Vite proxy), or set via env var for deployed backend
 const BASE = import.meta.env.VITE_API_BASE_URL || "";
 
+// Exported for components that need to prefix static asset URLs
+export const API_BASE = BASE;
+
+/** Prefix a backend-relative static URL (e.g. /static/...) with the API base. */
+export function staticUrl(path: string | null | undefined): string | null {
+  if (!path) return null;
+  if (path.startsWith("http")) return path; // already absolute
+  return `${BASE}${path}`;
+}
+
+export async function fetchExplainerAudio(): Promise<{ steps: any[]; all_cached: boolean }> {
+  const res = await fetch(`${BASE}/api/demo/explainer-audio`);
+  if (!res.ok) throw new Error(`Failed to fetch explainer audio: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchPersonas(): Promise<PersonaOptions> {
   const res = await fetch(`${BASE}/api/personas`);
   if (!res.ok) throw new Error(`Failed to fetch personas: ${res.status}`);

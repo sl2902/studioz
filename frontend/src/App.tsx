@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { BrowserRouter, Routes, Route, useNavigate, useParams } from "react-router-dom";
 import type { JobResponse, PersonaOptions } from "./types";
-import { fetchGoldenDemo, fetchJobStatus, fetchWalkthroughAudio } from "./api";
+import { fetchGoldenDemo, fetchJobStatus, fetchWalkthroughAudio, staticUrl } from "./api";
 import { PitchForm } from "./components/PitchForm";
 import { ProgressView } from "./components/ProgressView";
 import { ResultsView } from "./components/ResultsView";
@@ -167,7 +167,7 @@ function DemoRoute() {
           video_status: demoData.video_url ? "completed" : null,
         };
         setJobResult(fakeJob);
-        setWalkthroughAudioUrl(walkthroughData?.audio_url || null);
+        setWalkthroughAudioUrl(staticUrl(walkthroughData?.audio_url));
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load demo"))
       .finally(() => setLoading(false));

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import type { JobResponse, PersonaOptions, Storyboard } from "../types";
-import { renderVideo, fetchJobStatus, regenerateStoryboard, fetchPersonas, setGoldenDemo } from "../api";
+import { renderVideo, fetchJobStatus, regenerateStoryboard, fetchPersonas, setGoldenDemo, staticUrl } from "../api";
 
 interface Props {
   job: JobResponse;
@@ -231,6 +231,7 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
     if (!walkthroughAudioUrl) return;
     const audio = new Audio(walkthroughAudioUrl);
     walkthroughAudioRef.current = audio;
+    audio.playbackRate = 1.4;
     audio.play().catch(() => {});
     setWalkthroughSection("consensus");
 
@@ -440,7 +441,7 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
               <div key={frame.frame_number} className={`bg-[var(--color-surface-light)] rounded-lg overflow-hidden border ${frame.inspection_passed === false ? "border-amber-700/60" : "border-[var(--color-border)]"}`}>
                 {frame.image_url && (
                   <div className="relative">
-                    <img src={frame.image_url} alt={`Frame ${frame.frame_number}`} className="w-full aspect-video object-cover" />
+                    <img src={staticUrl(frame.image_url) || undefined} alt={`Frame ${frame.frame_number}`} className="w-full aspect-video object-cover" />
                     {frame.inspection_passed === false && (
                       <div className="absolute top-2 right-2 px-2 py-0.5 text-[10px] font-semibold rounded bg-amber-900/80 text-amber-300 border border-amber-700 backdrop-blur-sm">
                         ⚠ Did not pass inspection
@@ -530,7 +531,7 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
                 {regenStoryboard.frames.map((frame) => (
                   <div key={frame.frame_number} className="bg-[var(--color-surface-light)] rounded-lg overflow-hidden border border-[var(--color-border)]">
                     {frame.image_url && (
-                      <img src={frame.image_url} alt={`Frame ${frame.frame_number}`} className="w-full aspect-video object-cover" />
+                      <img src={staticUrl(frame.image_url) || undefined} alt={`Frame ${frame.frame_number}`} className="w-full aspect-video object-cover" />
                     )}
                     <div className="p-3">
                       <div className="flex items-center gap-2 mb-1">
@@ -557,7 +558,7 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
           {/* Video already exists (from parent job or this session) */}
           {(videoUrl || job.video_url) && (
             <div>
-              <video ref={videoPlayerRef} src={videoUrl || job.video_url!} controls className="w-full max-w-2xl rounded-lg border border-[var(--color-border)]" />
+              <video ref={videoPlayerRef} src={staticUrl(videoUrl || job.video_url) || undefined} controls className="w-full max-w-2xl rounded-lg border border-[var(--color-border)]" />
               <button
                 onClick={handleRenderVideo}
                 disabled={videoLoading}

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { fetchExplainerAudio, staticUrl } from "../api";
 
 /**
  * Self-narrating pipeline explainer — auto-advances as each step's
@@ -74,18 +75,22 @@ export function ExplainerView({ onExit }: Props) {
 
   // Fetch explainer audio URLs on mount
   useEffect(() => {
-    fetch("/api/demo/explainer-audio")
-      .then((r) => r.json())
+    fetchExplainerAudio()
       .then((data) => {
         const mapped: ExplainerStep[] = data.steps.map((s: any) => ({
           ...s,
+          // Prefix audio URLs with API base so they resolve to the backend, not the frontend host
+          audio_url: staticUrl(s.audio_url),
           stage: STEP_STAGE_MAP[s.id]?.stage || s.id,
           committeeMembers: STEP_STAGE_MAP[s.id]?.committeeMembers,
         }));
         setSteps(mapped);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch((err) => {
+        console.error("ExplainerView: failed to fetch audio", err);
+        setLoading(false);
+      });
   }, []);
 
   const currentStep = steps[stepIdx];
@@ -111,6 +116,7 @@ export function ExplainerView({ onExit }: Props) {
     if (!playing || !currentStep?.audio_url) return;
     const audio = new Audio(currentStep.audio_url);
     audioRef.current = audio;
+    audio.playbackRate = 1.4;
     audio.play().catch(() => {});
     audio.onended = () => {
       if (stepIdx < steps.length - 1) {
