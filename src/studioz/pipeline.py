@@ -25,9 +25,7 @@ from studioz.schemas import PitchBrief, ScriptTreatment, Storyboard
 
 OUTPUTS_DIR = Path("outputs/storyboard")
 
-# ============================================================
 # Pre-generation prompt reviewer
-# ============================================================
 
 # Fast regex patterns for known bad patterns (free, no LLM call)
 _BANNED_COLOR_PATTERN = re.compile(
@@ -516,7 +514,7 @@ async def run_studioz_pipeline(
                 print(f"\n[Video] Cannot proceed — {len(failed_frames)}/{len(storyboard.frames)} frames missing images.")
                 print(f"  Failed frames: {failed_frames}")
                 print(f"  Fix with: python -m studioz.regenerate_frame "
-                      f"--storyboard {storyboard_json_path} --frame <N>")
+                      f"--storyboard {storyboard_blob} --frame <N>")
                 print(f"  Then re-run with --render-video.")
             else:
                 video_path = await run_narration_pipeline(storyboard)
