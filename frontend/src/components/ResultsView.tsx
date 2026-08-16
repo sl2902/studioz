@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import type { JobResponse, PersonaOptions, Storyboard } from "../types";
-import { renderVideo, fetchJobStatus, regenerateStoryboard, fetchPersonas, setGoldenDemo, staticUrl } from "../api";
+import { renderVideo, fetchJobStatus, regenerateStoryboard, fetchPersonas, setGoldenDemo, staticUrl, NARRATION_PLAYBACK_RATE } from "../api";
 
 interface Props {
   job: JobResponse;
@@ -231,7 +231,7 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
     if (!walkthroughAudioUrl) return;
     const audio = new Audio(walkthroughAudioUrl);
     walkthroughAudioRef.current = audio;
-    audio.playbackRate = 1.4;
+    audio.playbackRate = NARRATION_PLAYBACK_RATE;
     audio.play().catch(() => {});
     setWalkthroughSection("consensus");
 

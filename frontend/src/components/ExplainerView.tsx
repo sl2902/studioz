@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { fetchExplainerAudio, staticUrl } from "../api";
+import { fetchExplainerAudio, staticUrl, NARRATION_PLAYBACK_RATE } from "../api";
 
 /**
  * Self-narrating pipeline explainer — auto-advances as each step's
@@ -116,7 +116,7 @@ export function ExplainerView({ onExit }: Props) {
     if (!playing || !currentStep?.audio_url) return;
     const audio = new Audio(currentStep.audio_url);
     audioRef.current = audio;
-    audio.playbackRate = 1.4;
+    audio.playbackRate = NARRATION_PLAYBACK_RATE;
     audio.play().catch(() => {});
     audio.onended = () => {
       if (stepIdx < steps.length - 1) {
