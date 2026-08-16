@@ -25,11 +25,11 @@ from studioz.clients.tts_client import _generate_single_speaker_pcm, _write_wav_
 # Explainer script — first-person narration per stage
 EXPLAINER_STEPS = [
     {"id": "intro", "voice": "Kore", "text":
-        "This is StudioZ — a multi-agent AI system that turns a single pitch "
-        "into a fully negotiated, previsualized film concept. It's built for "
-        "solo creators, indie studios, and small production teams who need "
-        "to test an idea's creative, financial, and legal viability before "
-        "committing real budget. Here's how it works."},
+        "Because a full run takes 3 to 10 minutes — real calls to Vertex AI, Parallel Search, "
+        "and Gemini's image and voice models — I'm walking through the architecture live, then "
+        "showing a completed run. StudioZ is a multi-agent AI system that stress-tests a film "
+        "pitch across creative, financial, and legal constraints, then previsualizes it — for solo "
+        "creators and small teams, before they commit real budget."},
     {"id": "screenwriter", "voice": "Kore", "text":
         "I'm the Screenwriter. I take your pitch and draft a full script "
         "treatment — title, genre, logline, and a three-act synopsis."},

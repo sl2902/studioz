@@ -156,7 +156,6 @@ async def build_video(
             "-c:a", "aac",
             "-b:a", "192k",
             "-movflags", "+faststart",
-            "-shortest",
             local_output,
         ])
 
