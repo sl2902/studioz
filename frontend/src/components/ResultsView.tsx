@@ -389,10 +389,10 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {[
-              { label: "Budget Comparables", items: citations.budget_comps },
-              { label: "Market Trends", items: citations.market_trends },
-              { label: "IP Clearance", items: citations.ip_clearance },
-            ].map(({ label, items }) => (
+              { label: "Budget Comparables", sourceLabel: "Industry Box Office Data", items: citations.budget_comps },
+              { label: "Market Trends", sourceLabel: "Industry Trade Publication", items: citations.market_trends },
+              { label: "IP Clearance", sourceLabel: "Reference / Precedent Source", items: citations.ip_clearance },
+            ].map(({ label, sourceLabel, items }) => (
               <div key={label}>
                 <p className="text-sm font-medium text-gray-300 mb-2">{label}</p>
                 {items.length === 0 ? (
@@ -402,16 +402,13 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
                     // Skip empty/broken citations
                     if (!c.title && !c.snippet && !c.url) return null;
                     return (
-                      <a
+                      <div
                         key={i}
-                        href={c.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="block bg-[var(--color-surface-light)] rounded-lg p-3 mb-2 border border-[var(--color-border)] hover:border-indigo-500/50 transition-colors"
+                        className="block bg-[var(--color-surface-light)] rounded-lg p-3 mb-2 border border-[var(--color-border)]"
                       >
                         <div className="flex items-start justify-between gap-2">
                           <p className="text-sm text-indigo-300 font-medium truncate flex-1">
-                            {c.title || "Source available"}
+                            {sourceLabel}
                           </p>
                           <span className="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold rounded bg-purple-900/40 text-purple-300 border border-purple-700/50">
                             Parallel
@@ -420,9 +417,9 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
                         {c.snippet ? (
                           <p className="text-xs text-gray-500 mt-1 line-clamp-2">{c.snippet}</p>
                         ) : (
-                          <p className="text-xs text-gray-600 mt-1 italic">Preview unavailable — click to view</p>
+                          <p className="text-xs text-gray-600 mt-1 italic">Source data available</p>
                         )}
-                      </a>
+                      </div>
                     );
                   })
                 )}
