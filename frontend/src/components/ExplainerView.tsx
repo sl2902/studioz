@@ -111,10 +111,47 @@ export function ExplainerView({ onExit }: Props) {
     setStepIdx((i) => Math.max(i - 1, 0));
   }, []);
 
+  // Preload the next step's audio clip while the current one is playing/active.
+  // Stores a pre-buffered Audio object keyed by step index so it's ready instantly
+  // when auto-advance or manual Next triggers.
+  const preloadedRef = useRef<Map<number, HTMLAudioElement>>(new Map());
+
+  useEffect(() => {
+    const nextIdx = stepIdx + 1;
+    if (nextIdx >= steps.length) return;
+    const nextStep = steps[nextIdx];
+    if (!nextStep?.audio_url) return;
+    // Don't re-preload if already cached
+    if (preloadedRef.current.has(nextIdx)) return;
+
+    const preloadAudio = new Audio(nextStep.audio_url);
+    preloadAudio.preload = "auto";
+    // Trigger buffering without playing
+    preloadAudio.load();
+    preloadedRef.current.set(nextIdx, preloadAudio);
+
+    // Cleanup: keep at most 3 preloaded entries to avoid memory growth
+    const keys = Array.from(preloadedRef.current.keys());
+    for (const k of keys) {
+      if (k < stepIdx - 1) {
+        preloadedRef.current.delete(k);
+      }
+    }
+  }, [stepIdx, steps]);
+
   // Play audio for current step
   useEffect(() => {
     if (!playing || !currentStep?.audio_url) return;
-    const audio = new Audio(currentStep.audio_url);
+
+    // Use preloaded audio if available, otherwise create fresh
+    let audio: HTMLAudioElement;
+    if (preloadedRef.current.has(stepIdx)) {
+      audio = preloadedRef.current.get(stepIdx)!;
+      preloadedRef.current.delete(stepIdx);
+    } else {
+      audio = new Audio(currentStep.audio_url);
+    }
+
     audioRef.current = audio;
     audio.playbackRate = NARRATION_PLAYBACK_RATE;
     audio.play().catch(() => {});
