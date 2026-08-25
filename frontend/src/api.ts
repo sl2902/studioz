@@ -7,7 +7,7 @@ const BASE = import.meta.env.VITE_API_BASE_URL || "";
 export const API_BASE = BASE;
 
 /** Playback rate for TTS narration audio (explainer + walkthrough). Does NOT affect the final rendered video. */
-export const NARRATION_PLAYBACK_RATE = 1.4;
+export const NARRATION_PLAYBACK_RATE = 1.5;
 
 /** Prefix a backend-relative static URL (e.g. /static/...) with the API base. */
 export function staticUrl(path: string | null | undefined): string | null {
