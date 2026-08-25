@@ -22,33 +22,23 @@ StudioZ runs entirely on Google's Gemini Enterprise Agent Platform (Vertex AI), 
 
 **Pipeline:**
 
-```
-Pitch ──▶ Screenwriter ──▶ Parallel Search Grounding ──▶ Committee (concurrent)
-                                                            ├── CFO
-                                                            ├── Creative Exec
-                                                            └── Legal Counsel
-                                                                   │
-                                                                   ▼
-                                                          Consensus Chair
-                                                                   │
-                                                          Greenlight Gate
-                                                                   │
-                                                      ┌────────────┴────────────┐
-                                                      ▼                         ▼
-                                                  Rejected                  Director
-                                                (reasoned notes)         (storyboard beats,
-                                                                       runtime-scaled 3–6 frames)
-                                                                                │
-                                                                                ▼
-                                                                    Image Generation (Nano Banana Pro)
-                                                                        + self-correcting inspector
-                                                                                │
-                                                                                ▼
-                                                                    Narrator (table-read script,
-                                                                     multi-speaker dialogue)
-                                                                                │
-                                                                                ▼
-                                                                    TTS + Video Assembly
+```mermaid
+flowchart TD
+    A[Pitch] --> B[Screenwriter]
+    B --> C[Parallel Search Grounding]
+    C --> D{{Committee — concurrent review}}
+    D --> D1[CFO]
+    D --> D2[Creative Exec]
+    D --> D3[Legal Counsel]
+    D1 --> E[Consensus Chair]
+    D2 --> E
+    D3 --> E
+    E --> F{Greenlight Gate}
+    F -- Rejected --> G[Reasoned notes]
+    F -- Greenlit --> H["Director<br/>storyboard beats, 3–6 frames"]
+    H --> I["Image Generation (Nano Banana Pro)<br/>+ self-correcting inspector"]
+    I --> J["Narrator<br/>table-read script, multi-speaker dialogue"]
+    J --> K[TTS + Video Assembly]
 ```
 
 **Key components:**
