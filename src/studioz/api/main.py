@@ -85,18 +85,26 @@ else:
 
 
 def _path_to_url(file_path: str | None) -> str | None:
-    """Convert a local file path to a servable static URL."""
+    """Convert a local file path or blob path to a servable URL.
+
+    In GCS mode, returns a direct GCS public URL.
+    In local mode, returns a /static/ relative path.
+    """
     if file_path is None:
         return None
+    # Already a full URL (e.g. from a prior get_serving_url call)
+    if file_path.startswith("http"):
+        return file_path
     p = Path(file_path)
     try:
-        relative = p.relative_to("outputs")
-        return f"/static/{relative}"
+        relative = str(p.relative_to("outputs"))
+        return storage.get_serving_url(relative)
     except ValueError:
-        # Already a URL or relative path
+        # Already a relative blob path or /static/ path
         if file_path.startswith("/static/"):
-            return file_path
-        return f"/static/{file_path}"
+            blob_path = file_path[len("/static/"):]
+            return storage.get_serving_url(blob_path)
+        return storage.get_serving_url(file_path)
 
 
 async def _persist_job_manifest(job_id: str, result: dict) -> None:
@@ -350,7 +358,8 @@ class PersonaOptions(BaseModel):
 @app.get("/api/personas")
 async def get_personas() -> PersonaOptions:
     """Return available persona options for screenwriter and director roles."""
-    catalog = load_personas()  # Re-read live so changes are reflected without restart
+    # Use module-level cached catalog (already loaded at import time for Literal type construction)
+    catalog = _personas
     screenwriter_options = []
     for key, data in catalog.get("screenwriter", {}).items():
         screenwriter_options.append(PersonaOption(
@@ -404,6 +413,7 @@ async def get_status(job_id: str):
     # Fallback: check for persisted manifest on disk
     manifest = await _load_job_manifest(job_id)
     if manifest:
+        manifest = _migrate_manifest_urls(manifest)
         return {
             "job_id": job_id,
             "status": "completed",
@@ -440,8 +450,16 @@ async def render_video(job_id: str):
     storyboard_data = source_job.result["storyboard"]
     # Reconstruct with file paths (reverse URL conversion)
     for frame in storyboard_data["frames"]:
-        if frame.get("image_url") and frame["image_url"].startswith("/static/"):
-            frame["image_path"] = "outputs/" + frame["image_url"][len("/static/"):]
+        image_url = frame.get("image_url")
+        if image_url:
+            if image_url.startswith("/static/"):
+                frame["image_path"] = "outputs/" + image_url[len("/static/"):]
+            elif image_url.startswith("https://storage.googleapis.com/"):
+                # Direct GCS URL — extract the blob path after bucket name
+                # URL format: https://storage.googleapis.com/{bucket}/{blob_path}
+                parts = image_url.split("/", 4)  # ['https:', '', 'storage.googleapis.com', bucket, blob_path]
+                if len(parts) == 5:
+                    frame["image_path"] = parts[4]
     storyboard = Storyboard.model_validate(storyboard_data)
 
     # Create a new job for video rendering
@@ -537,6 +555,83 @@ async def set_golden_demo(job_id: str):
     }
 
 
+def _redact_citations_for_public_display(manifest: dict) -> dict:
+    """Redact third-party source names and URLs from citation data for public display.
+
+    Replaces real titles with generic category labels, removes URLs,
+    and strips any inline URLs/markdown links from snippet text.
+    Only affects what's returned to the browser — stored manifest is untouched.
+    """
+    import re
+
+    # Markdown links: [text](url) → keep just the text
+    _MD_LINK_PATTERN = re.compile(r'\[([^\]]*)\]\(https?://[^\)]+\)')
+    # Bare URLs
+    _URL_PATTERN = re.compile(r'https?://\S+')
+    # Collapse multiple spaces / leftover formatting artifacts
+    _MULTI_SPACE = re.compile(r'  +')
+
+    def _clean_snippet(text: str) -> str:
+        # Replace markdown links with just their display text
+        text = _MD_LINK_PATTERN.sub(r'\1', text)
+        # Strip any remaining bare URLs
+        text = _URL_PATTERN.sub('', text)
+        # Clean up residual formatting
+        text = _MULTI_SPACE.sub(' ', text).strip()
+        return text
+
+    CATEGORY_LABELS = {
+        "budget_comps": "Industry Box Office Data",
+        "market_trends": "Industry Trade Publication",
+        "ip_clearance": "Reference / Precedent Source",
+    }
+
+    citations = manifest.get("grounding_citations")
+    if not citations:
+        return manifest
+
+    redacted = dict(manifest)
+    redacted_citations = {}
+    for category, label in CATEGORY_LABELS.items():
+        items = citations.get(category, [])
+        redacted_citations[category] = [
+            {
+                "title": label,
+                "url": "",
+                "snippet": _clean_snippet(item.get("snippet", "")),
+            }
+            for item in items
+        ]
+    redacted["grounding_citations"] = redacted_citations
+    return redacted
+
+
+def _migrate_manifest_urls(manifest: dict) -> dict:
+    """Convert any legacy /static/ URLs in a manifest to direct serving URLs.
+
+    Handles manifests that were persisted before the direct-GCS-URL migration.
+    In local mode this is a no-op (get_serving_url returns /static/ anyway).
+    """
+    def _convert(url: str | None) -> str | None:
+        if not url:
+            return None
+        if url.startswith("/static/"):
+            return storage.get_serving_url(url[len("/static/"):])
+        return url
+
+    # Migrate storyboard frame image URLs
+    storyboard = manifest.get("storyboard")
+    if storyboard and isinstance(storyboard, dict):
+        for frame in storyboard.get("frames", []):
+            frame["image_url"] = _convert(frame.get("image_url"))
+
+    # Migrate video URL
+    if manifest.get("video_url"):
+        manifest["video_url"] = _convert(manifest["video_url"])
+
+    return manifest
+
+
 @app.get("/api/demo/golden")
 async def get_golden_demo():
     """Load the golden demo result via the pointer + manifest."""
@@ -548,18 +643,22 @@ async def get_golden_demo():
     if not manifest:
         raise HTTPException(status_code=404, detail=f"Golden job '{golden_job_id}' manifest not found.")
 
-    return manifest
+    manifest = _migrate_manifest_urls(manifest)
+    return _redact_citations_for_public_display(manifest)
 
 
 @app.get("/api/demo/explainer-audio")
 async def get_explainer_audio():
     """Return list of explainer step audio URLs (for auto-advance playback)."""
     from studioz.generate_demo_audio import EXPLAINER_STEPS
+
+    # Check all step audio files concurrently instead of sequentially
+    blob_paths = [f"_assets/explainer_voice/{step['id']}.wav" for step in EXPLAINER_STEPS]
+    existence_checks = await asyncio.gather(*[storage.exists(bp) for bp in blob_paths])
+
     steps = []
-    for step in EXPLAINER_STEPS:
-        blob_path = f"_assets/explainer_voice/{step['id']}.wav"
-        has_audio = await storage.exists(blob_path)
-        audio_url = f"/static/{blob_path}" if has_audio else None
+    for step, blob_path, has_audio in zip(EXPLAINER_STEPS, blob_paths, existence_checks):
+        audio_url = storage.get_serving_url(blob_path) if has_audio else None
         steps.append({
             "id": step["id"],
             "text": step["text"],
@@ -578,7 +677,7 @@ async def get_walkthrough_audio():
     if not await storage.exists(blob_path):
         raise HTTPException(status_code=404, detail="Walkthrough audio not generated yet. Run: python -m studioz.generate_demo_audio")
     return {
-        "audio_url": f"/static/{blob_path}",
+        "audio_url": storage.get_serving_url(blob_path),
         "job_id": golden_job_id,
     }
 

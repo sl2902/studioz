@@ -93,22 +93,32 @@ class GCSStorageBackend(StorageBackend):
         logger.info("GCS storage backend initialized: gs://{}", bucket_name)
 
     async def save_file(self, data: bytes, blob_path: str, content_type: str = "application/octet-stream") -> str:
+        import asyncio
         blob = self._bucket.blob(blob_path)
-        blob.upload_from_string(data, content_type=content_type)
-        return f"/static/{blob_path}"
+        await asyncio.to_thread(blob.upload_from_string, data, content_type=content_type)
+        return self.get_serving_url(blob_path)
 
     async def read_file(self, blob_path: str) -> bytes | None:
+        import asyncio
         blob = self._bucket.blob(blob_path)
-        if not blob.exists():
+        if not await asyncio.to_thread(blob.exists):
             return None
-        return blob.download_as_bytes()
+        return await asyncio.to_thread(blob.download_as_bytes)
 
     async def exists(self, blob_path: str) -> bool:
+        import asyncio
         blob = self._bucket.blob(blob_path)
-        return blob.exists()
+        return await asyncio.to_thread(blob.exists)
 
     def get_serving_url(self, blob_path: str) -> str:
-        return f"/static/{blob_path}"
+        """Return a direct GCS public URL for the asset.
+
+        Uses the public storage.googleapis.com URL pattern. This requires the
+        bucket to have uniform public read access (allUsers: objectViewer).
+        For a hackathon demo bucket serving only generated media, this is
+        appropriate and avoids the complexity/overhead of signed URLs.
+        """
+        return f"https://storage.googleapis.com/{self._bucket_name}/{blob_path}"
 
     def local_path(self, blob_path: str) -> str:
         """
@@ -126,9 +136,10 @@ class GCSStorageBackend(StorageBackend):
 
     async def upload_local_file(self, local_path: str, blob_path: str, content_type: str = "application/octet-stream") -> str:
         """Upload a file from local disk to GCS (for ffmpeg output, etc.)."""
+        import asyncio
         blob = self._bucket.blob(blob_path)
-        blob.upload_from_filename(local_path, content_type=content_type)
-        return f"/static/{blob_path}"
+        await asyncio.to_thread(blob.upload_from_filename, local_path, content_type=content_type)
+        return self.get_serving_url(blob_path)
 
 
 # ============================================================
