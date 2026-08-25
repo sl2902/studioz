@@ -38,7 +38,7 @@ def main():
         req = urllib.request.Request(url, method="POST")
         with urllib.request.urlopen(req) as response:
             data = json.loads(response.read())
-            print(f"✓ Saved successfully!")
+            print(f"  Saved successfully!")
             print(f"  Title: {data.get('title', 'Unknown')}")
             print(f"  Path: {data.get('path')}")
             print(f"  Storyboard: {'yes' if data.get('has_storyboard') else 'no'}")
@@ -49,9 +49,9 @@ def main():
             detail = json.loads(body).get("detail", body)
         except Exception:
             detail = body
-        print(f"✗ Error ({e.code}): {detail}")
+        print(f"  Error ({e.code}): {detail}")
     except urllib.error.URLError as e:
-        print(f"✗ Cannot connect to server at {SERVER_URL}")
+        print(f"  Cannot connect to server at {SERVER_URL}")
         print(f"  Make sure the FastAPI server is running: uvicorn studioz.api.main:app --port 8000")
         print(f"  Error: {e.reason}")
 

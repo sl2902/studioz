@@ -82,7 +82,7 @@ async def generate_explainer_audio():
     for step in EXPLAINER_STEPS:
         blob_path = f"_assets/explainer_voice/{step['id']}.wav"
         if await storage.exists(blob_path):
-            print(f"  ✓ {step['id']} (cached)")
+            print(f"  {step['id']} (cached)")
             continue
 
         print(f"  Generating: {step['id']}...", end=" ", flush=True)
@@ -112,7 +112,7 @@ async def generate_demo_walkthrough(golden_job_id: str | None = None):
 
     blob_path = f"_assets/demo_walkthrough/{golden_job_id}.wav"
     if await storage.exists(blob_path):
-        print(f"  ✓ Demo walkthrough (cached for {golden_job_id[:8]})")
+        print(f"  Demo walkthrough (cached for {golden_job_id[:8]})")
         return
 
     # Load the golden manifest
