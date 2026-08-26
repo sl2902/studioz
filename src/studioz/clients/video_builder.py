@@ -6,17 +6,28 @@ from loguru import logger
 
 from studioz.clients.storage import storage, is_gcs
 
+# Timeout for individual ffmpeg commands (seconds). A single frame segment
+# should never take more than 240s; full concat+mux might take longer.
+_FFMPEG_SEGMENT_TIMEOUT = 240
+_FFMPEG_FINAL_TIMEOUT = 420
 
-async def _run_ffmpeg(args: list[str]) -> bool:
-    """Run an ffmpeg/ffprobe command, return True on success."""
+
+async def _run_ffmpeg(args: list[str], timeout: float = _FFMPEG_SEGMENT_TIMEOUT) -> bool:
+    """Run an ffmpeg/ffprobe command, return True on success. Kills process on timeout."""
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    _, stderr = await proc.communicate()
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.error("ffmpeg timed out after {}s — killing process. Command: {}", timeout, " ".join(args[:5]))
+        proc.kill()
+        await proc.wait()
+        return False
     if proc.returncode != 0:
-        logger.error("ffmpeg failed: {}", stderr.decode()[-500:])
+        logger.error("ffmpeg failed (exit {}): {}", proc.returncode, stderr.decode()[-500:])
         return False
     return True
 
@@ -29,7 +40,13 @@ async def get_audio_duration(audio_path: str) -> float | None:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, _ = await proc.communicate()
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=45)
+    except asyncio.TimeoutError:
+        logger.warning("ffprobe timed out for '{}'", audio_path)
+        proc.kill()
+        await proc.wait()
+        return None
     if proc.returncode != 0:
         logger.warning("ffprobe failed for '{}'", audio_path)
         return None
@@ -67,6 +84,21 @@ async def build_video(
         blob_path = blob_path[len("outputs/"):]
     local_output = storage.local_path(blob_path)
 
+    logger.info("[Video Assembly] Starting — {} frames, output: {}", len(frame_image_paths), blob_path)
+
+    # Verify all input files exist before starting ffmpeg work
+    missing_inputs = []
+    for i, img_path in enumerate(frame_image_paths):
+        if not Path(img_path).exists():
+            missing_inputs.append(f"frame {i+1}: {img_path}")
+    if not Path(narration_audio_path).exists():
+        missing_inputs.append(f"narration audio: {narration_audio_path}")
+    if missing_inputs:
+        logger.error("[Video Assembly] Missing input files — aborting:\n  {}", "\n  ".join(missing_inputs))
+        return None
+
+    logger.info("[Video Assembly] All {} input files verified on disk", len(frame_image_paths) + 1)
+
     # Generate bubble overlay (once, cached)
     bubble_path = generate_bubble_overlay()
 
@@ -77,6 +109,7 @@ async def build_video(
 
         # Step 1: Create per-frame silent video segments
         for i, (img_path, duration) in enumerate(zip(frame_image_paths, frame_durations)):
+            logger.info("[Video Assembly] Creating segment for frame {}/{} ({:.2f}s) from: {}", i + 1, len(frame_image_paths), duration, img_path)
             # Check if this frame has a dialogue portion
             has_dialogue = (
                 frame_timings is not None
@@ -142,12 +175,14 @@ async def build_video(
             logger.debug("Created segment(s) for frame {}: {}s", i + 1, f"{duration:.2f}")
 
         # Step 2: Write concat list
+        logger.info("[Video Assembly] All {} segments created. Writing concat list...", len(segment_paths))
         concat_list_path = str(tmp / "concat_list.txt")
         with open(concat_list_path, "w") as f:
             for seg in segment_paths:
                 f.write(f"file '{seg}'\n")
 
         # Step 3: Concatenate segments and mux narration audio
+        logger.info("[Video Assembly] Concatenating {} segments + muxing audio -> {}", len(segment_paths), local_output)
         success = await _run_ffmpeg([
             "ffmpeg", "-y",
             "-f", "concat", "-safe", "0", "-i", concat_list_path,
@@ -157,7 +192,7 @@ async def build_video(
             "-b:a", "192k",
             "-movflags", "+faststart",
             local_output,
-        ])
+        ], timeout=_FFMPEG_FINAL_TIMEOUT)
 
         if not success:
             logger.error("Failed to mux final video")
@@ -165,6 +200,7 @@ async def build_video(
 
         # Upload to GCS if needed
         if is_gcs():
+            logger.info("[Video Assembly] Uploading final video to GCS: {}", blob_path)
             await storage.upload_local_file(local_output, blob_path, "video/mp4")
 
         logger.success("Video assembled: {}", blob_path)

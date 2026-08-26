@@ -1,11 +1,11 @@
 """Frame inspection: cheap vision call to verify generated images match constraints."""
 
 import base64
-from pathlib import Path
 
 from google.genai import types
 from loguru import logger
 
+from studioz.clients.storage import storage
 from studioz.clients.vertex_client import client
 from studioz.config import settings
 from studioz.schemas import FrameInspectionResult
@@ -24,14 +24,23 @@ async def inspect_frame(
     Uses a cheap vision model to check for constraint violations.
     
     Args:
-        image_path: Path to the generated image file.
+        image_path: Path to the generated image file (local path or blob path).
         imagen_prompt: The original prompt used to generate the image.
         style_constraints: Style-specific constraints to check (e.g. "zero legible text").
     
     Returns:
         FrameInspectionResult with passed=True if OK, or issues list if problems found.
     """
-    image_bytes = Path(image_path).read_bytes()
+    # Normalize to blob path (strip outputs/ prefix if present)
+    blob_path = image_path
+    if blob_path.startswith("outputs/"):
+        blob_path = blob_path[len("outputs/"):]
+
+    image_bytes = await storage.read_file(blob_path)
+    if image_bytes is None:
+        logger.warning("Frame inspection: could not read image at '{}' — treating as pass", blob_path)
+        return FrameInspectionResult(passed=True, issues=[])
+
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
     inspection_prompt = f"""You are a quality inspector for generated images. Examine this image and determine if it meets ALL of the following requirements:
