@@ -43,21 +43,29 @@ async def inspect_frame(
 
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
-    inspection_prompt = f"""You are a quality inspector for generated images. Examine this image and determine if it meets ALL of the following requirements:
+    inspection_prompt = f"""You are a quality inspector for generated storyboard images. Your job is to catch HARD violations that make a frame unusable — not to nitpick minor compositional details.
 
-1. SCENE MATCH: The image should depict the scene described in this prompt:
-   "{imagen_prompt}"
+HARD RULES (set passed=false and list in "issues" if ANY of these are violated):
+- ZERO TEXT: Any legible text, labels, captions, watermarks, letters, or words anywhere in the image. Even partially legible characters count.
+- STYLE/COLOR: The image must satisfy these style constraints exactly:
+  {style_constraints}
+  For monochrome/stick-figure styles: any color (other than black lines on white/near-white background) is a hard fail. For cinematic styles: dramatically wrong color palette (e.g. black-and-white when color was requested) is a hard fail.
 
-2. STYLE CONSTRAINTS: The image MUST satisfy these hard constraints:
-   {style_constraints}
+MINOR (record in "minor_notes" but do NOT set passed=false for these):
+- Slight background tone variation (off-white, cream, light gray vs. pure white) — only fail if it's a dramatically wrong color, not a subtle tint.
+- Object count mismatches in background details (two similar shapes instead of one, extra small elements).
+- Imprecise icon/symbol geometry (e.g. "target" vs. "viewfinder" icon shape) — as long as a reasonable distinguishing icon is present near the correct figure.
+- Minor object shape deviations (e.g. "cube" vs. "rectangular block") that don't change what the object represents.
+- Line-origin points or exact spatial arrangement of decorative background elements.
+- Scene composition being slightly different from the prompt while still depicting the same overall scene and mood.
 
-3. TEXT CHECK: Look carefully for ANY legible text, labels, captions, watermarks, or words rendered anywhere in the image. Report any you find.
+The intended scene (for reference, not strict pixel-matching):
+"{imagen_prompt}"
 
-Respond with:
-- passed=true ONLY if the image satisfies ALL constraints with no issues.
-- passed=false with a list of specific issues if ANY constraint is violated.
-
-Be strict about text — even partially legible words count as a violation if the style requires zero text."""
+DECISION RULE:
+- passed=true if there is NO legible text AND the color/style hard constraints are met. Minor compositional differences are acceptable.
+- passed=false ONLY for text or color/style violations. Put these in "issues".
+- Put any minor observations in "minor_notes" (these are informational only and will NOT trigger a retry)."""
 
     try:
         response = await client.aio.models.generate_content(
@@ -80,6 +88,8 @@ Be strict about text — even partially legible words count as a violation if th
         result: FrameInspectionResult = response.parsed
         if result.passed:
             logger.info("Frame inspection PASSED: {}", image_path)
+            if result.minor_notes:
+                logger.debug("Frame inspection minor notes for {}: {}", image_path, result.minor_notes)
         else:
             logger.warning("Frame inspection FAILED: {} — issues: {}", image_path, result.issues)
         return result

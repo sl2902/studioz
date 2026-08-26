@@ -46,6 +46,16 @@ class StorageBackend(ABC):
         """Get a URL that can serve this file to the frontend."""
         ...
 
+    @abstractmethod
+    async def local_path(self, blob_path: str) -> str:
+        """Get a local filesystem path for ffmpeg/wave operations.
+        
+        For local backend: returns the actual file path.
+        For GCS backend: downloads the blob to a temp location if it exists,
+        or returns a writable staging path for new files.
+        """
+        ...
+
 
 class LocalStorageBackend(StorageBackend):
     """Filesystem-backed storage (development). Files stored under outputs/."""
@@ -75,7 +85,7 @@ class LocalStorageBackend(StorageBackend):
     def get_serving_url(self, blob_path: str) -> str:
         return f"/static/{blob_path}"
 
-    def local_path(self, blob_path: str) -> str:
+    async def local_path(self, blob_path: str) -> str:
         """Get the local filesystem path (needed for ffmpeg and wave operations)."""
         path = self._resolve(blob_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -120,18 +130,19 @@ class GCSStorageBackend(StorageBackend):
         """
         return f"https://storage.googleapis.com/{self._bucket_name}/{blob_path}"
 
-    def local_path(self, blob_path: str) -> str:
+    async def local_path(self, blob_path: str) -> str:
         """
         For GCS mode, download blob to a local temp location for ffmpeg/wave ops.
         Or provide a writable local path that will be uploaded after use.
         """
+        import asyncio
         # Use a local staging area for files that need filesystem access (ffmpeg, wave)
         staging = Path("/tmp/studioz_staging") / blob_path
         staging.parent.mkdir(parents=True, exist_ok=True)
         # If file exists in GCS, download it
         blob = self._bucket.blob(blob_path)
-        if blob.exists():
-            blob.download_to_filename(str(staging))
+        if await asyncio.to_thread(blob.exists):
+            await asyncio.to_thread(blob.download_to_filename, str(staging))
         return str(staging)
 
     async def upload_local_file(self, local_path: str, blob_path: str, content_type: str = "application/octet-stream") -> str:

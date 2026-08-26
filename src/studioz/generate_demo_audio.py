@@ -89,7 +89,7 @@ async def generate_explainer_audio():
         pcm = await _generate_single_speaker_pcm(step["text"], step["voice"])
         if pcm:
             # Write locally then upload
-            local_path = storage.local_path(blob_path)
+            local_path = await storage.local_path(blob_path)
             _write_wav_file(local_path, pcm)
             if is_gcs():
                 await storage.upload_local_file(local_path, blob_path, "audio/wav")
@@ -163,7 +163,7 @@ async def generate_demo_walkthrough(golden_job_id: str | None = None):
     print(f"  Generating walkthrough for '{title}'...", end=" ", flush=True)
     pcm = await _generate_single_speaker_pcm(walkthrough_text, "Kore")
     if pcm:
-        local_path = storage.local_path(blob_path)
+        local_path = await storage.local_path(blob_path)
         _write_wav_file(local_path, pcm)
         if is_gcs():
             await storage.upload_local_file(local_path, blob_path, "audio/wav")

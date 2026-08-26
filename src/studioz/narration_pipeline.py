@@ -3,6 +3,7 @@ Narration pipeline: orchestrates narrator agent -> TTS -> timeline -> video asse
 Called from pipeline.py when --render-video is set.
 """
 
+import asyncio
 import re
 import time
 from pathlib import Path
@@ -168,11 +169,14 @@ async def run_narration_pipeline(
         audio_blob_path = f"audio/{job_id}/{safe_title}_narration.wav"
     else:
         audio_blob_path = f"audio/{safe_title}_narration.wav"
-    audio_path = storage.local_path(audio_blob_path)
+    audio_path = await storage.local_path(audio_blob_path)
 
     _stage(f"tts:{total_frames}")
     print("\nGenerating narration audio via TTS (per-frame)...")
-    tts_result = await generate_narration_audio(narration.segments, voice_map, audio_path)
+    tts_result = await generate_narration_audio(
+        narration.segments, voice_map, audio_path,
+        on_progress=lambda current, total: _stage(f"tts:{current}/{total}"),
+    )
     result, frame_timings = tts_result if tts_result[0] is not None else (None, [])
     if result is None:
         logger.error("TTS generation failed — cannot assemble video")
@@ -194,29 +198,35 @@ async def run_narration_pipeline(
     for seg, dur in zip(narration.segments, durations):
         print(f"  Frame {seg.frame_number}: {dur:.2f}s")
 
-    # Step 6: Assemble video
+    # Step 6: Assemble video — download all frame images concurrently
+    _stage("video_assembly:downloading")
+    print(f"\n[Video] Downloading {len(storyboard.frames)} frame images for assembly...")
+
+    async def _download_frame(frame, idx):
+        """Download a single frame image, return (local_path, duration) or None."""
+        if not frame.image_path:
+            return None
+        img_blob = frame.image_path
+        if img_blob.startswith("outputs/"):
+            img_blob = img_blob[len("outputs/"):]
+        local_img = await storage.local_path(img_blob)
+        if Path(local_img).exists():
+            return (local_img, durations[idx])
+        logger.warning("Frame {} has no image (skipping in video): {}", frame.frame_number, frame.image_path)
+        return None
+
+    download_results = await asyncio.gather(
+        *[_download_frame(frame, i) for i, frame in enumerate(storyboard.frames)]
+    )
+
     frame_image_paths = []
     frame_durations = []
-    for i, frame in enumerate(storyboard.frames):
-        if frame.image_path:
-            # Resolve to local path (for local backend this is outputs/..., for GCS it stages from bucket)
-            img_blob = frame.image_path
-            if img_blob.startswith("outputs/"):
-                img_blob = img_blob[len("outputs/"):]
-            local_img = storage.local_path(img_blob)
-            if Path(local_img).exists():
-                frame_image_paths.append(local_img)
-                frame_durations.append(durations[i])
-            else:
-                logger.warning(
-                    "Frame {} has no image (skipping in video): {}",
-                    frame.frame_number, frame.image_path
-                )
-        else:
-            logger.warning(
-                "Frame {} has no image (skipping in video): {}",
-                frame.frame_number, frame.image_path
-            )
+    for result in download_results:
+        if result is not None:
+            frame_image_paths.append(result[0])
+            frame_durations.append(result[1])
+
+    print(f"[Video] {len(frame_image_paths)}/{len(storyboard.frames)} frames ready.")
 
     if not frame_image_paths:
         logger.error("No frame images available — cannot assemble video")
@@ -243,7 +253,7 @@ async def run_narration_pipeline(
         card_blob_dir = f"video/{job_id}/_cards"
     else:
         card_blob_dir = "_cards"
-    card_output_dir = storage.local_path(card_blob_dir)
+    card_output_dir = await storage.local_path(card_blob_dir)
     disclaimer_cards = generate_disclaimer_cards(
         estimated_runtime_minutes=estimated_runtime_minutes,
         greenlit=greenlit,
@@ -277,7 +287,11 @@ async def run_narration_pipeline(
         audio_path = padded_audio_path
         print(f"[Video] Audio padded with {total_card_duration:.1f}s silence")
 
-    result = await build_video(frame_image_paths, frame_durations, audio_path, video_path, frame_timings=frame_timings)
+    result = await build_video(
+        frame_image_paths, frame_durations, audio_path, video_path,
+        frame_timings=frame_timings,
+        on_progress=lambda current, total: _stage(f"video_assembly:{current}/{total}"),
+    )
     if result is None:
         print("[Video] Assembly failed.")
         return None

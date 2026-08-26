@@ -11,8 +11,10 @@ class PitchBrief(BaseModel):
     )
     target_runtime_minutes: int | None = Field(
         default=None,
+        gt=0,
+        le=45,
         description="Target runtime in minutes, if constrained (e.g. short film festival limits). "
-                    "If set, this overrides the screenwriter's own runtime estimate deterministically."
+                    "If set, this overrides the screenwriter's own runtime estimate deterministically. Max 45."
     )
 
 
@@ -117,8 +119,9 @@ class NarrationScript(BaseModel):
 
 
 class FrameInspectionResult(BaseModel):
-    passed: bool = Field(description="Whether the generated image matches its intended content and constraints")
-    issues: list[str] = Field(default_factory=list, description="Specific problems found, empty if passed=True")
+    passed: bool = Field(description="Whether the image passes HARD rules (zero text, correct color/monochrome). Minor compositional deviations do NOT cause failure.")
+    issues: list[str] = Field(default_factory=list, description="Hard-rule violations only (text found, wrong color). Empty if passed=True.")
+    minor_notes: list[str] = Field(default_factory=list, description="Minor compositional observations (background tint, object count, icon shape) — informational only, do not affect pass/fail.")
 
 
 class PromptReviewResult(BaseModel):

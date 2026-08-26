@@ -60,7 +60,7 @@ async def write_wav_to_storage(
     sample_width: int = _PCM_SAMPLE_WIDTH,
 ) -> str:
     """Write WAV to storage backend. Returns the local filesystem path."""
-    local_path = storage.local_path(blob_path)
+    local_path = await storage.local_path(blob_path)
     _write_wav_file(local_path, pcm_data, channels, rate, sample_width)
     if is_gcs():
         await storage.upload_local_file(local_path, blob_path, "audio/wav")
@@ -170,6 +170,7 @@ async def generate_narration_audio(
     segments: list[NarrationSegment],
     voice_map: dict[str, str],
     output_path: str,
+    on_progress: callable = None,
 ) -> str | None:
     """
     Generates speech audio per frame (one TTS call each, respecting
@@ -195,6 +196,8 @@ async def generate_narration_audio(
     frame_timings: list[tuple[float, float]] = []
 
     for i, seg in enumerate(segments):
+        if on_progress:
+            on_progress(i + 1, len(segments))
         t0 = time.perf_counter()
         if seg.dialogue and seg.dialogue.character_name in voice_map:
             # Multi-speaker: Narrator + character
@@ -256,7 +259,7 @@ async def generate_narration_audio(
     if blob_path.startswith("outputs/"):
         blob_path = blob_path[len("outputs/"):]
 
-    local_file = storage.local_path(blob_path)
+    local_file = await storage.local_path(blob_path)
     _write_wav_file(local_file, bytes(all_pcm))
     if is_gcs():
         await storage.upload_local_file(local_file, blob_path, "audio/wav")

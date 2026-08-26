@@ -156,7 +156,7 @@ def _storyboard_to_dict(storyboard: Storyboard) -> dict:
 class PitchRequest(BaseModel):
     pitch: str = Field(min_length=10, description="The film pitch/premise (at least 10 characters)")
     film_type: Literal["feature", "short"] = "feature"
-    target_runtime_minutes: int | None = Field(default=None, gt=0, description="Target runtime in minutes (must be positive if set)")
+    target_runtime_minutes: int | None = Field(default=None, gt=0, le=45, description="Target runtime in minutes (must be positive if set, max 45)")
     screenwriter_persona: ScreenwriterPersona = _SCREENWRITER_KEYS[0]  # type: ignore[valid-type]
     director_persona: DirectorPersona = _DIRECTOR_KEYS[0]  # type: ignore[valid-type]
     force: bool = False

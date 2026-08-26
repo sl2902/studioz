@@ -63,6 +63,7 @@ async def build_video(
     narration_audio_path: str,
     output_path: str,
     frame_timings: list[tuple[float, float]] | None = None,
+    on_progress: callable = None,
 ) -> str | None:
     """
     Assemble a narrated video from frame images + audio.
@@ -82,7 +83,7 @@ async def build_video(
     blob_path = output_path
     if blob_path.startswith("outputs/"):
         blob_path = blob_path[len("outputs/"):]
-    local_output = storage.local_path(blob_path)
+    local_output = await storage.local_path(blob_path)
 
     logger.info("[Video Assembly] Starting — {} frames, output: {}", len(frame_image_paths), blob_path)
 
@@ -110,6 +111,8 @@ async def build_video(
         # Step 1: Create per-frame silent video segments
         for i, (img_path, duration) in enumerate(zip(frame_image_paths, frame_durations)):
             logger.info("[Video Assembly] Creating segment for frame {}/{} ({:.2f}s) from: {}", i + 1, len(frame_image_paths), duration, img_path)
+            if on_progress:
+                on_progress(i + 1, len(frame_image_paths))
             # Check if this frame has a dialogue portion
             has_dialogue = (
                 frame_timings is not None
@@ -127,7 +130,7 @@ async def build_video(
                         "-loop", "1", "-i", img_path,
                         "-t", f"{narrator_dur:.3f}",
                         "-vf", "scale=1376:768:force_original_aspect_ratio=decrease,pad=1376:768:(ow-iw)/2:(oh-ih)/2",
-                        "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p", "-r", "24",
+                        "-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage", "-pix_fmt", "yuv420p", "-r", "24",
                         seg_path,
                     ])
                     if not success:
@@ -147,7 +150,7 @@ async def build_video(
                     "[0]scale=1376:768:force_original_aspect_ratio=decrease,pad=1376:768:(ow-iw)/2:(oh-ih)/2,format=rgb24[base];"
                     "[1]format=rgba[overlay];"
                     "[base][overlay]overlay=0:0",
-                    "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p", "-r", "24",
+                    "-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage", "-pix_fmt", "yuv420p", "-r", "24",
                     seg_path,
                 ])
                 if not success:
@@ -163,7 +166,7 @@ async def build_video(
                     "-loop", "1", "-i", img_path,
                     "-t", f"{duration:.3f}",
                     "-vf", "scale=1376:768:force_original_aspect_ratio=decrease,pad=1376:768:(ow-iw)/2:(oh-ih)/2",
-                    "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p", "-r", "24",
+                    "-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage", "-pix_fmt", "yuv420p", "-r", "24",
                     seg_path,
                 ])
                 if not success:
