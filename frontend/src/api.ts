@@ -28,6 +28,18 @@ export async function fetchPersonas(): Promise<PersonaOptions> {
   return res.json();
 }
 
+/** Extract a readable error message from a FastAPI/Pydantic error response. */
+function extractErrorMessage(err: any): string {
+  if (typeof err === "string") return err;
+  if (err?.detail) {
+    if (typeof err.detail === "string") return err.detail;
+    if (Array.isArray(err.detail)) {
+      return err.detail.map((e: any) => e.msg || JSON.stringify(e)).join("; ");
+    }
+  }
+  return "An unexpected error occurred.";
+}
+
 export async function submitPitch(request: PitchRequest): Promise<{ job_id: string; cached: boolean }> {
   const res = await fetch(`${BASE}/api/pitch`, {
     method: "POST",
@@ -36,7 +48,7 @@ export async function submitPitch(request: PitchRequest): Promise<{ job_id: stri
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || JSON.stringify(err));
+    throw new Error(extractErrorMessage(err));
   }
   return res.json();
 }
@@ -51,7 +63,7 @@ export async function renderVideo(jobId: string): Promise<{ job_id: string }> {
   const res = await fetch(`${BASE}/api/render-video/${jobId}`, { method: "POST" });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || JSON.stringify(err));
+    throw new Error(extractErrorMessage(err));
   }
   return res.json();
 }
@@ -67,7 +79,7 @@ export async function regenerateStoryboard(
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || JSON.stringify(err));
+    throw new Error(extractErrorMessage(err));
   }
   return res.json();
 }

@@ -62,8 +62,21 @@ function VideoProgressFlow({ stage }: { stage: string | null }) {
   // Build caption
   let caption = "Starting video render...";
   if (base === "narration") caption = "Writing narration script...";
-  else if (base === "tts") caption = detail ? `Generating audio for ${detail} frames...` : "Generating speech audio...";
-  else if (base === "video_assembly") caption = "Compositing frames and audio into final video...";
+  else if (base === "tts") {
+    if (detail && detail.includes("/")) {
+      caption = `Generating speech audio (${detail})...`;
+    } else {
+      caption = "Generating speech audio...";
+    }
+  } else if (base === "video_assembly") {
+    if (detail === "downloading") {
+      caption = "Downloading frame images...";
+    } else if (detail && detail.includes("/")) {
+      caption = `Compositing segment ${detail}...`;
+    } else {
+      caption = "Compositing frames and audio into final video...";
+    }
+  }
 
   return (
     <div className="space-y-4">
