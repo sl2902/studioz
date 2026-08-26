@@ -210,6 +210,17 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
   // Walkthrough audio auto-play (for golden demo view)
   const walkthroughAudioRef = useRef<HTMLAudioElement | null>(null);
   const videoPlayerRef = useRef<HTMLVideoElement | null>(null);
+
+  // Preload the walkthrough audio as soon as the URL is available,
+  // so it's buffered by the time the play effect fires.
+  useEffect(() => {
+    if (!walkthroughAudioUrl) return;
+    const audio = new Audio(walkthroughAudioUrl);
+    audio.preload = "auto";
+    audio.load();
+    walkthroughAudioRef.current = audio;
+    return () => { audio.pause(); audio.src = ""; };
+  }, [walkthroughAudioUrl]);
   // Section highlighting: tracks which section of the walkthrough is currently being narrated
   // Sections map to the narration script in generate_demo_audio.py:
   //   0-25%  → "consensus" (exec review summary)
@@ -229,8 +240,9 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
 
   useEffect(() => {
     if (!walkthroughAudioUrl) return;
-    const audio = new Audio(walkthroughAudioUrl);
-    walkthroughAudioRef.current = audio;
+    // Reuse the preloaded audio object (already buffering from the preload effect)
+    const audio = walkthroughAudioRef.current;
+    if (!audio) return;
     audio.playbackRate = NARRATION_PLAYBACK_RATE;
     audio.play().catch(() => {});
     setWalkthroughSection("consensus");
@@ -389,10 +401,10 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {[
-              { label: "Budget Comparables", sourceLabel: "Industry Box Office Data", items: citations.budget_comps },
-              { label: "Market Trends", sourceLabel: "Industry Trade Publication", items: citations.market_trends },
-              { label: "IP Clearance", sourceLabel: "Reference / Precedent Source", items: citations.ip_clearance },
-            ].map(({ label, sourceLabel, items }) => (
+              { label: "Budget Comparables", items: citations.budget_comps },
+              { label: "Market Trends", items: citations.market_trends },
+              { label: "IP Clearance", items: citations.ip_clearance },
+            ].map(({ label, items }) => (
               <div key={label}>
                 <p className="text-sm font-medium text-gray-300 mb-2">{label}</p>
                 {items.length === 0 ? (
@@ -401,14 +413,17 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
                   items.map((c, i) => {
                     // Skip empty/broken citations
                     if (!c.title && !c.snippet && !c.url) return null;
+                    const CardTag = c.url ? "a" : "div";
+                    const linkProps = c.url ? { href: c.url, target: "_blank", rel: "noopener noreferrer" } : {};
                     return (
-                      <div
+                      <CardTag
                         key={i}
-                        className="block bg-[var(--color-surface-light)] rounded-lg p-3 mb-2 border border-[var(--color-border)]"
+                        {...linkProps}
+                        className={`block bg-[var(--color-surface-light)] rounded-lg p-3 mb-2 border border-[var(--color-border)] ${c.url ? "hover:border-indigo-500/50 transition-colors" : ""}`}
                       >
                         <div className="flex items-start justify-between gap-2">
                           <p className="text-sm text-indigo-300 font-medium truncate flex-1">
-                            {sourceLabel}
+                            {c.title || "Source available"}
                           </p>
                           <span className="shrink-0 px-1.5 py-0.5 text-[9px] font-semibold rounded bg-purple-900/40 text-purple-300 border border-purple-700/50">
                             Parallel
@@ -419,7 +434,7 @@ export function ResultsView({ job, onReset, sourceJobId, personas: initialPerson
                         ) : (
                           <p className="text-xs text-gray-600 mt-1 italic">Source data available</p>
                         )}
-                      </div>
+                      </CardTag>
                     );
                   })
                 )}
